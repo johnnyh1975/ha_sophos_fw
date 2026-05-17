@@ -1,11 +1,10 @@
 # Sophos Firewall — Home Assistant Integration
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![Version](https://img.shields.io/badge/Version-0.8.1-green)](https://github.com/hacs/integration)
+[![Version](https://img.shields.io/badge/Version-0.9.0-green)](https://github.com/johnnyh1975/ha_sophos_fw/releases)
 [![HA Version](https://img.shields.io/badge/HA-2024.9%2B-blue)](https://www.home-assistant.io)
-[![Quality Scale](https://img.shields.io/badge/Quality_Scale-Silver-silver)](https://www.home-assistant.io/docs/quality_scale/)
 
-Home Assistant Custom Integration für Sophos Firewall (SFOS 20.x / 22.x). Verbindet HA mit der Firewall über XML API und SNMP — ohne Cloud, ohne Drittanbieter.
+Home Assistant Custom Integration für Sophos Firewall (SFOS 18.x – 22.x). Verbindet HA mit der Firewall über XML API und SNMP — ohne Cloud, ohne Drittanbieter.
 
 ---
 
@@ -14,28 +13,24 @@ Home Assistant Custom Integration für Sophos Firewall (SFOS 20.x / 22.x). Verbi
 | Kategorie | Entities |
 |---|---|
 | **Interfaces** | PortA, PortB — Verbunden/Getrennt, Zone, IP-Assignment |
-| **Firewall-Rules** | Schalter (mit Schreibzugriff) oder Nur-Lese-Sensor — im Konfigurationsbereich |
+| **VPN-Tunnel** | IPSec-Tunnel mit Verbindungsstatus (SNMP) |
+| **Firewall-Rules** | Schalter (mit Schreibzugriff) oder Nur-Lese-Sensor |
+| **Web-Filter** | Schalter für DefaultAction Allow/Deny (mit Schreibzugriff) |
 | **DHCP** | Kombinierter Sensor: Server-Status + Lease-Anzahl + vollständige Lease-Liste als Attribut |
-| **System** | RAM, Disk, Swap (%), Uptime (`"77 d 14 h"`), Backup-Häufigkeit |
-| **Verbindungen** | HTTP- und SMTP-Verbindungen, FTP-Hits, Captive-Portal-User |
-| **Dienste** | Aggregations-Sensor: `"19 / 21 running"` — `running`/`stopped`-Listen als Attribut |
-| **VPN-Tunnel** | IPSec-Tunnel mit Verbindungsstatus |
-| **Lizenzen** | Aggregations-Sensor: `"8 / 9 OK"` — nächstes Ablaufdatum, Details als Attribut |
+| **System** | RAM, Disk, Swap (%), Uptime, Backup-Häufigkeit |
+| **Verbindungen** | HTTP-, SMTP- und FTP-Verbindungen, Captive-Portal-User |
+| **Dienste** | Aggregations-Sensor: `19 / 21 running` — `running`/`stopped`-Listen als Attribut |
+| **Lizenzen** | Aggregations-Sensor: `8 / 9 OK` — nächstes Ablaufdatum, Details als Attribut |
 | **Sicherheit** | Web-Filter Standardaktion, IPS-Signaturversion, Webcat-Version |
 | **Hardware-Health** | CPU/NPU-Temperatur, Lüfter-RPM (nur physische Appliances) |
 | **Steuerung** | Backup auslösen (Button), Firewall-Rules und Web-Filter schalten |
-
-### Konfigurationsbereich (EntityCategory.CONFIG)
-
-Firewall-Rules und Web-Filter-Policies erscheinen im Konfigurationsbereich der Geräte-Seite — nicht in der Standardansicht. Sie sind weiterhin voll schaltbar und für Automationen nutzbar.
 
 ---
 
 ## Voraussetzungen
 
 - Home Assistant 2024.9+
-- Sophos Firewall SFOS 20.x oder 22.x
-- Python 3.12+ (puresnmp 2.x, pysnmp ist nicht kompatibel)
+- Sophos Firewall SFOS 18.x – 22.x
 - API-Zugang: **Netzwerk → Administration → Geräte-Zugang → HTTPS-Admin aktivieren**
 - Optional SNMP: **System → Administration → SNMP → Community-String konfigurieren**
 
@@ -46,15 +41,14 @@ Firewall-Rules und Web-Filter-Policies erscheinen im Konfigurationsbereich der G
 ### Via HACS (empfohlen)
 
 1. HACS → Integrationen → ⋮ → Benutzerdefinierte Repositories
-2. URL: `https://github.com/<dein-repo>/sophos_firewall`, Kategorie: Integration
+2. URL: `https://github.com/johnnyh1975/ha_sophos_fw`, Kategorie: Integration
 3. Integration suchen: „Sophos Firewall" → Installieren
 4. HA neu starten
 
 ### Manuell
 
 ```bash
-cp -r custom_components/sophos_firewall \
-  /config/custom_components/sophos_firewall
+cp -r custom_components/sophos_firewall /config/custom_components/sophos_firewall
 ```
 
 HA neu starten.
@@ -67,13 +61,15 @@ HA neu starten.
 
 Der Setup-Assistent führt durch 4 Schritte:
 
-**Schritt 1 — Verbindung:** Host/IP, API-Port (Standard: 4444), Benutzername, Passwort, SSL-Verifizierung
+**Schritt 1 — Verbindung:** Host/IP, API-Port (Standard: 4444), Benutzername, Passwort, SSL-Verifizierung.
 
 **Schritt 2 — SNMP (optional):** Aktiviere SNMP für Systemmetriken, Dienste, VPN-Tunnel und Lizenzen. Community-String und SNMP-Version (1 oder 2c) konfigurieren.
 
-**Schritt 3 — Schreibzugriff (optional):** Erlaubt das Schalten von Firewall-Rules und Web-Filter-Policies aus HA. Mit Schreibzugriff: Switches. Ohne: Nur-Lese-Sensoren.
+**Schritt 3 — Schreibzugriff (optional):** Erlaubt das Schalten von Firewall-Rules und Web-Filter-Policies direkt aus HA. Mit Schreibzugriff: Switches. Ohne: Nur-Lese-Sensoren.
 
 **Schritt 4 — Abfrage-Konfiguration:** Polling-Intervalle und aktive Endpunkte — gruppiert nach Tier. Alle Standardwerte sind optimal voreingestellt.
+
+Nach der Einrichtung können Host, Port und Zugangsdaten jederzeit über **Konfigurieren → Verbindung ändern** angepasst werden, ohne die Integration neu einzurichten.
 
 ---
 
@@ -81,85 +77,24 @@ Der Setup-Assistent führt durch 4 Schritte:
 
 | Tier | Standard | XML-Endpunkte | SNMP-Endpunkte |
 |---|---|---|---|
-| ⚡ Echtzeit | 30s | Interfaces | Stats, Dienste |
-| 🔄 Schnell | 120s | — | VPN-Tunnel |
-| 🔧 Operativ | 600s | Firewall-Rules | System-Health |
-| 🗄 Statisch | 1800s | DHCP, Web-Filter, Backup | Lizenzen |
-| 🔁 Einmalig | beim Start | Admin-Settings | Geräteinformationen |
+| ⚡ Realtime | 30 s | Interfaces | Stats, Dienste |
+| 🔄 Fast | 120 s | — | VPN-Tunnel, HA-Status |
+| 🔧 Operative | 600 s | Firewall-Rules | System-Health |
+| 🗄 Static | 1800 s | DHCP, Web-Filter, Backup | Lizenzen |
+| 🔁 Once | beim Start | Admin-Settings | Geräteinformationen |
 
 Schreiboperationen (Schalter, Button) lösen immer sofort einen Refresh des betroffenen Tiers aus.
 
 ---
 
-## Technische Architektur
+## Kompatibilität
 
-### Datenquellen
-
-**XML API** (Port 4444, HTTPS): Interfaces, Firewall-Rules, DHCP-Server + StaticLeases, Web-Filter, Backup, Admin-Settings.
-
-**SNMP** (Port 161, UDP, puresnmp 2.x): System-Statistiken, Dienste (21), VPN-Tunnel, Lizenzen (9 Module), Hardware-Health, Geräteinfo (Modell, Firmware, IPS-Version, Webcat-Version).
-
-OID-Basis: `1.3.6.1.4.1.2604.5.1` (Sophos proprietäre MIB, SFOS 22.x, getestet auf APIVersion 2200.1)
-
-### Session-Management
-
-Persistente `aiohttp.TCPConnector`-Session mit `force_close=True` und `asyncio.Semaphore(2)`. Verhindert Timeouts durch Server-seitige Keep-Alive-Trennung und begrenzt parallele Requests auf 2.
-
-### SNMP-Besonderheiten
-
-`puresnmp 2.x` statt pysnmp (auf Python 3.12+ inkompatibel). Security-Plugin-Discovery wird einmalig beim Start im Executor-Thread ausgeführt und gecacht — kein Blocking-I/O im HA Event Loop.
-
-### VM-Erkennung (SFVH)
-
-Auf virtuellen Appliances sind Temperatur- und Lüfter-OIDs nicht verfügbar. Die Integration erkennt dies nach dem ersten Health-Fetch automatisch und deaktiviert das Hardware-Health-Polling dauerhaft.
-
-### Multi-Firewall-Support
-
-Entity-IDs basieren auf dem Firewall-Hostnamen — kollisionsfrei bei mehreren Instanzen:
-
-```
-sensor.5heynexg_system_dienste
-sensor.buero_fw_system_dienste   ← zweite Firewall, kein Konflikt
-```
-
----
-
-## DHCP Lease-Sensor
-
-Pro DHCP-Server ein kombinierter Sensor:
-
-```
-Netz · DHCP Main_DHCP    →   In Betrieb · 3 Leases
-Netz · DHCP Guest VLAN   →   In Betrieb · 0 Leases
-Netz · DHCP DMZ          →   Außer Betrieb
-```
-
-Vollständige Lease-Liste im Attribut — direkt in Automationen nutzbar:
-
-```yaml
-{{ state_attr('sensor.5heynexg_dhcp_leases_main_dhcp', 'leases')
-   | selectattr('MACAddress', 'eq', 'aa:bb:cc:dd:ee:ff')
-   | map(attribute='IPAddress') | first }}
-```
-
----
-
-## Dienste-Aggregations-Sensor
-
-Statt 21 einzelner Binary Sensors ein Sensor mit vollständiger Übersicht:
-
-```
-System · Dienste    →   19 / 21 running
-Attribute:
-  running: [Antivirus, DNS, HTTP-Proxy, IPS, ...]
-  stopped: [Anti-Spam, HA-Service]
-```
-
-Für Automationen:
-
-```yaml
-{{ 'Anti-Spam' in state_attr('sensor.5heynexg_system_dienste', 'stopped') }}
-```
+| Gerät / Version | Status |
+|---|---|
+| SFVH (Virtual Appliance) | ✅ vollständig unterstützt, automatische VM-Erkennung |
+| XGS-Serie (Hardware) | ✅ unterstützt, Hardware-Health aktiv |
+| SFOS 18.x – 22.x | ✅ unterstützt |
+| HA 2024.9+ | ✅ erforderlich |
 
 ---
 
@@ -170,57 +105,52 @@ Für Automationen:
 trigger:
   - platform: template
     value_template: >
-      {{ state_attr('sensor.5heynexg_sicherheit_lizenzen', 'problem') | length > 0 }}
+      {{ state_attr('sensor.5heynexg_licenses', 'problem') | length > 0 }}
 action:
   - service: notify.mobile_app
     data:
       message: >
         Sophos Lizenz-Problem:
-        {{ state_attr('sensor.5heynexg_sicherheit_lizenzen', 'problem') | join(', ') }}
+        {{ state_attr('sensor.5heynexg_licenses', 'problem') | join(', ') }}
 ```
 
 **Firewall-Rule bei Heimkehr aktivieren:**
 ```yaml
 trigger:
   - platform: state
-    entity_id: person.jean_christoph
+    entity_id: person.john
     to: home
 action:
   - service: switch.turn_on
     target:
-      entity_id: switch.5heynexg_rule_homeautomation_to
+      entity_id: switch.5heynexg_rule_homeautomation_to_iot
 ```
 
----
-
-## Kompatibilität
-
-| Gerät / Version | Status | Getestet mit |
-|---|---|---|
-| SFVH (Virtual Appliance) | ✅ vollständig | KV01, SFOS 22.0.0 GA-Build411 |
-| XGS-Serie (Hardware) | ✅ unterstützt | Hardware-Health aktiv |
-| SFOS 20.x | ✅ unterstützt | API-kompatibel |
-| SFOS 22.x | ✅ getestet | APIVersion 2200.1 |
-| HA 2024.9+ | ✅ erforderlich | Sections API im Config Flow |
+**DHCP-Lease-Suche per MAC-Adresse:**
+```yaml
+{{ state_attr('sensor.5heynexg_dhcp_leases_main_dhcp', 'leases')
+   | selectattr('MACAddress', 'eq', 'aa:bb:cc:dd:ee:ff')
+   | map(attribute='IPAddress') | first }}
+```
 
 ---
 
 ## Troubleshooting
 
-**Alle Entitäten zeigen „Unbekannt" nach Start**
-→ Erster Fetch dauert 30–45s. Nach Reload kurz abwarten.
+**Entities zeigen „Nicht verfügbar" nach Start**
+→ Ab v0.9.0 werden Entities sofort nach dem Setup geladen. Bei Timeout: HA-Log prüfen, Host und Port verifizieren.
 
 **SNMP-Sensoren bleiben auf „Unbekannt"**
-→ Community String prüfen: System → Administration → SNMP
+→ Community String prüfen: System → Administration → SNMP. SNMP muss auf der Firewall aktiviert sein.
 
 **„Cannot connect" beim Setup**
-→ API-Zugang prüfen: Netzwerk → Administration → Geräte-Zugang → HTTPS-Admin aktivieren
+→ API-Zugang prüfen: Netzwerk → Administration → Geräte-Zugang → HTTPS-Admin aktivieren.
 
 **Temperatur-Sensoren fehlen**
 → Normal auf SFVH (virtuelle Appliance). Automatisch erkannt — kein Fehler.
 
-**Blocking I/O im HA Log**
-→ Nur beim ersten Start nach Installation. Bei Persistenz: HA neu starten.
+**Host oder Port falsch konfiguriert**
+→ Konfigurieren → Verbindung ändern — kein Löschen und Neueinrichten nötig.
 
 ---
 
@@ -228,18 +158,10 @@ action:
 
 | Version | Änderungen |
 |---|---|
-| **v0.8.1** | Quality Scale Silver: `async_migrate_entry()`, `unique_id` auf Config Entry. IPS- und Webcat-Versions-Sensoren. README aktualisiert. |
-| **v0.8.0** | Bugfixes: Switch-Tier-Force, Lizenz-Datum chronologisch, XML-Escaping. Uptime als `"77 d 14 h"`. FTP-Sensor. RestoreEntity. `DEFAULT_POLL_SNMP_HA=False`. `hacs.json`. |
-| **v0.7.0** | Aggregations-Sensoren für Dienste und Lizenzen. EntityCategory.CONFIG für Rules und Web-Filter. Sortier-Präfixe in Entity-Namen. DHCP-Sensor kombiniert. |
-| **v0.6.6** | Fix: SNMP SecurityModel-Instanz korrekt via `mod.create()` erzeugt |
-| **v0.6.5** | Fix: puresnmp Security-Plugin-Loader gecacht — kein Blocking-I/O mehr |
-| **v0.6.4** | Fix: Entity-ID Dopplung `5heynexg_5heynexg_...` behoben |
-| **v0.6.2** | Sections API für Config Flow — gruppierte Abfrage-Konfiguration |
-| **v0.5.8** | VM-Erkennung (SFVH) — Hardware-Sensoren nie erstellt wenn keine Daten |
-| **v0.5.6** | Hostname-basierte Entity-IDs für Multi-Firewall-Setups |
+| **v0.9.0** | Initial HACS Release. Reconfigure Flow, `async_config_entry_first_refresh`, `PARALLEL_UPDATES = 0`, `config_entry=entry` im Coordinator, englische `en.json`, `quality_scale.yaml`, CI-Workflow, MIT-Lizenz. |
 
 ---
 
 ## Lizenz
 
-MIT — Nutzung auf eigene Gefahr. Schreibzugriff kann die Firewall-Konfiguration verändern.
+[MIT](LICENSE) — Nutzung auf eigene Gefahr. Schreibzugriff kann die Firewall-Konfiguration verändern.
