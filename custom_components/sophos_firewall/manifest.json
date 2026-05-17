@@ -1,0 +1,16 @@
+{
+  "domain": "sophos_firewall",
+  "name": "Sophos Firewall",
+  "version": "0.9.0",
+  "config_flow": true,
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "requirements": [
+    "puresnmp>=2.0.0"
+  ],
+  "codeowners": [
+    "@johnnyh1975"
+  ],
+  "documentation": "https://github.com/johnnyh1975/ha_sophos_fw",
+  "issue_tracker": "https://github.com/johnnyh1975/ha_sophos_fw/issues"
+}

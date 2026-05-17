@@ -1,0 +1,238 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Sophos Firewall — Verbindung",
+        "description": "Verbindungsdaten der Sophos Firewall (XML API, Port 4444).",
+        "data": {
+          "host": "Hostname oder IP-Adresse",
+          "port": "API-Port",
+          "username": "Benutzername",
+          "password": "Passwort",
+          "verify_ssl": "SSL-Zertifikat prüfen"
+        }
+      },
+      "snmp": {
+        "title": "Sophos Firewall — SNMP (optional)",
+        "description": "SNMP aktivieren für CPU, RAM, Uptime, Lizenz- und Dienststatus.\nSNMP muss auf der Firewall unter System → Administration → SNMP aktiviert sein.",
+        "data": {
+          "snmp_enabled": "SNMP aktivieren",
+          "snmp_community": "Community String",
+          "snmp_version": "SNMP-Version"
+        }
+      },
+      "write_access": {
+        "title": "Sophos Firewall — Schreibzugriff",
+        "description": "⚠ Schreibzugriff erlaubt das Aktivieren/Deaktivieren von Firewall-Rules und Web-Filter-Policies direkt aus Home Assistant.\n\nStandardmäßig deaktiviert. Nur aktivieren wenn du weißt, was du tust.",
+        "data": {
+          "write_access": "Schreibzugriff aktivieren"
+        }
+      },
+      "polling": {
+        "title": "Abfrage-Konfiguration",
+        "description": "Legt fest welche Daten wie oft abgefragt werden. Alle Standardwerte sind optimal voreingestellt.\n\nWrite-Operationen aus HA (Schalter) lösen immer sofort einen Refresh aus.",
+        "sections": {
+          "realtime": {
+            "name": "⚡ Echtzeit",
+            "description": "Daten die sich häufig ändern (Interfaces, System-Metriken, Dienste)",
+            "data": {
+              "interval_realtime": "Intervall in Sekunden",
+              "poll_xml_interfaces": "Interfaces — PortA/PortB Status und Zone",
+              "poll_snmp_stats": "System-Statistiken — RAM, Disk, Traffic, Uptime",
+              "poll_snmp_services": "Dienste — IPS, AV, DNS, VPN (21 Dienste)"
+            }
+          },
+          "fast": {
+            "name": "🔄 Schnell",
+            "description": "Daten die sich gelegentlich ändern (VPN-Tunnel, HA-Status)",
+            "data": {
+              "interval_fast": "Intervall in Sekunden",
+              "poll_snmp_tunnels": "VPN-Tunnel — IPSec Verbindungsstatus",
+              "poll_snmp_ha": "HA-Status — High-Availability"
+            }
+          },
+          "operative": {
+            "name": "🔧 Operativ",
+            "description": "Daten die sich selten ändern (Firewall-Rules, Hardware-Temps)",
+            "data": {
+              "interval_operative": "Intervall in Sekunden",
+              "poll_xml_fw_rules": "Firewall-Rules — alle Regeln mit Status",
+              "poll_snmp_health": "System-Health — Temperaturen, Lüfter (nur Hardware)"
+            }
+          },
+          "static": {
+            "name": "🗄 Statisch",
+            "description": "Daten die sich kaum ändern (DHCP-Leases, Web-Filter, Lizenzen)",
+            "data": {
+              "interval_static": "Intervall in Sekunden",
+              "poll_xml_dhcp": "DHCP + StaticLeases — Geräte MAC/IP/Hostname",
+              "poll_xml_webfilter": "Web-Filter — DefaultAction Allow/Deny",
+              "poll_xml_backup": "Backup-Konfiguration — Häufigkeit",
+              "poll_snmp_licenses": "Lizenzen — Status und Ablaufdaten"
+            }
+          }
+        },
+        "data": {}
+      },
+      "reconfigure": {
+        "title": "Verbindung ändern — {name}",
+        "description": "Verbindungseinstellungen der Sophos Firewall aktualisieren.",
+        "data": {
+          "host": "Hostname oder IP-Adresse",
+          "port": "API-Port",
+          "username": "Benutzername",
+          "password": "Passwort",
+          "verify_ssl": "SSL-Zertifikat prüfen"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Benutzername oder Passwort falsch.",
+      "cannot_connect": "Verbindung zur Firewall fehlgeschlagen. Host und Port prüfen.",
+      "snmp_not_available": "puresnmp noch nicht installiert. HA neu starten und dann SNMP über 'Konfigurieren' aktivieren.",
+      "snmp_cannot_connect": "SNMP-Agent nicht erreichbar. Community String und Firewall-Konfiguration prüfen.",
+      "unknown": "Unbekannter Fehler. Logs prüfen."
+    },
+    "abort": {
+      "already_configured": "Diese Firewall ist bereits konfiguriert.",
+      "reconfigure_successful": "Verbindungseinstellungen erfolgreich aktualisiert."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Einstellungen",
+        "description": "SNMP-Zugangsdaten und Abfrage-Konfiguration. Bei Aktivierung von SNMP wird die Verbindung getestet.",
+        "sections": {
+          "realtime": {
+            "name": "⚡ Echtzeit",
+            "description": "Daten die sich häufig ändern",
+            "data": {
+              "interval_realtime": "Intervall in Sekunden",
+              "poll_xml_interfaces": "Interfaces — PortA/PortB Status und Zone",
+              "poll_snmp_stats": "System-Statistiken — RAM, Disk, Traffic, Uptime",
+              "poll_snmp_services": "Dienste — IPS, AV, DNS, VPN (21 Dienste)"
+            }
+          },
+          "fast": {
+            "name": "🔄 Schnell",
+            "description": "Daten die sich gelegentlich ändern",
+            "data": {
+              "interval_fast": "Intervall in Sekunden",
+              "poll_snmp_tunnels": "VPN-Tunnel — IPSec Verbindungsstatus",
+              "poll_snmp_ha": "HA-Status — High-Availability"
+            }
+          },
+          "operative": {
+            "name": "🔧 Operativ",
+            "description": "Daten die sich selten ändern",
+            "data": {
+              "interval_operative": "Intervall in Sekunden",
+              "poll_xml_fw_rules": "Firewall-Rules — alle Regeln mit Status",
+              "poll_snmp_health": "System-Health — Temperaturen, Lüfter (nur Hardware)"
+            }
+          },
+          "static": {
+            "name": "🗄 Statisch",
+            "description": "Daten die sich kaum ändern",
+            "data": {
+              "interval_static": "Intervall in Sekunden",
+              "poll_xml_dhcp": "DHCP + StaticLeases — Geräte MAC/IP/Hostname",
+              "poll_xml_webfilter": "Web-Filter — DefaultAction Allow/Deny",
+              "poll_xml_backup": "Backup-Konfiguration — Häufigkeit",
+              "poll_snmp_licenses": "Lizenzen — Status und Ablaufdaten"
+            }
+          }
+        },
+        "data": {
+          "snmp_enabled": "SNMP aktivieren",
+          "snmp_community": "SNMP Community String",
+          "snmp_version": "SNMP-Version",
+          "write_access": "Schreibzugriff (Firewall-Rules, Web-Filter)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "interface_status": {
+        "name": "Netz · Interface {name}"
+      },
+      "firewall_rule_status": {
+        "name": "Rule {name}"
+      },
+      "vpn_tunnel_status": {
+        "name": "VPN {name}"
+      }
+    },
+    "sensor": {
+      "services_summary": {
+        "name": "System · Dienste"
+      },
+      "licenses_summary": {
+        "name": "Sicherheit · Lizenzen"
+      },
+      "memory_percent": {
+        "name": "System · RAM-Auslastung"
+      },
+      "disk_percent": {
+        "name": "System · Disk-Auslastung"
+      },
+      "swap_percent": {
+        "name": "System · Swap-Auslastung"
+      },
+      "uptime": {
+        "name": "System · Uptime"
+      },
+      "http_hits": {
+        "name": "Netz · HTTP-Verbindungen"
+      },
+      "smtp_hits": {
+        "name": "Netz · SMTP-Verbindungen"
+      },
+      "live_users": {
+        "name": "Netz · Aktive Captive-Portal-User"
+      },
+      "cpu_temperature": {
+        "name": "System · CPU-Temperatur"
+      },
+      "npu_temperature": {
+        "name": "System · NPU-Temperatur"
+      },
+      "fan_speed": {
+        "name": "System · Lüfter {fan}"
+      },
+      "dhcp_leases": {
+        "name": "Netz · DHCP-Leases {server}"
+      },
+      "web_filter_default_action": {
+        "name": "Sicherheit · Web-Filter Standardaktion"
+      },
+      "backup_frequency": {
+        "name": "System · Backup-Häufigkeit"
+      },
+      "ftp_hits": {
+        "name": "Netz · FTP-Verbindungen"
+      },
+      "ips_version": {
+        "name": "Sicherheit · IPS-Signaturversion"
+      },
+      "webcat_version": {
+        "name": "Sicherheit · Webcat-Version"
+      }
+    },
+    "switch": {
+      "firewall_rule": {
+        "name": "Rule {name}"
+      },
+      "web_filter_policy": {
+        "name": "Web-Filter {name}"
+      }
+    },
+    "button": {
+      "trigger_backup": {
+        "name": "Backup auslösen"
+      }
+    }
+  }
+}

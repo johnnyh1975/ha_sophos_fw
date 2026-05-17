@@ -1,0 +1,124 @@
+rules:
+  # ── Bronze ────────────────────────────────────────────────────────────────
+  action-setup:
+    status: exempt
+    comment: >
+      Integration does not register custom actions (services). All control is
+      via entity platforms (switch, button).
+  appropriate-polling:
+    status: done
+    comment: >
+      5-tier coordinator: 30 s realtime, 2 min fast, 10 min operative,
+      30 min static, once-only. Intervals are user-configurable via Options Flow.
+  brands: done
+  common-modules: done
+  config-flow: done
+  config-flow-test-coverage:
+    status: todo
+    comment: >
+      Basic config flow tests exist in tests/. Full coverage (reauth,
+      reconfigure, error paths) is planned for the next release.
+  dependency-transparency: done
+  docs-actions:
+    status: exempt
+    comment: Integration does not expose custom actions.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  entity-event-setup:
+    status: exempt
+    comment: Integration is polling-based; no push/event entity setup.
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-setup: done
+  unique-config-entry: done
+
+  # ── Silver ────────────────────────────────────────────────────────────────
+  action-exceptions:
+    status: exempt
+    comment: No custom actions registered.
+  config-entry-unloading: done
+  docs-configuration-parameters: done
+  docs-installation-parameters: done
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable: done
+  parallel-updates: done
+  reauthentication-flow: done
+  test-coverage:
+    status: todo
+    comment: >
+      Test suite covers config flow and entity setup. SNMP + XML coordinator
+      tests are planned.
+
+  # ── Gold ──────────────────────────────────────────────────────────────────
+  devices: done
+  diagnostics: done
+  discovery:
+    status: exempt
+    comment: >
+      Sophos Firewall is a manually configured local appliance. It does not
+      advertise itself via mDNS, SSDP, DHCP, or any other discovery mechanism
+      supported by Home Assistant.
+  discovery-update-info:
+    status: exempt
+    comment: See discovery exemption above.
+  docs-data-update: done
+  docs-examples: done
+  docs-known-limitations: done
+  docs-supported-devices: done
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: done
+  entity-category: done
+  entity-device-class: done
+  entity-disabled-by-default:
+    status: exempt
+    comment: >
+      All provided entities are meaningful for typical firewall monitoring use
+      cases. Hardware-only sensors (temperature, fans) are gated by VM
+      detection and never created on virtual appliances.
+  entity-translations: done
+  exception-translations:
+    status: todo
+    comment: >
+      Error strings in ConfigEntryNotReady / UpdateFailed use plain English
+      currently. translation_domain / translation_key pattern for exceptions
+      is planned.
+  icon-translations:
+    status: exempt
+    comment: Icons are set via _attr_icon on entity classes; no state-based icon changes.
+  reconfigure-flow: done
+  repair-issues:
+    status: exempt
+    comment: >
+      All recoverable error states (auth failure, SNMP timeout) are handled
+      transparently by the coordinator retry logic and reauth flow without
+      requiring user-visible repair issues.
+  stale-devices:
+    status: exempt
+    comment: >
+      The integration manages a single device (the firewall itself). Dynamic
+      entities (interfaces, VPN tunnels, firewall rules) reflect current
+      firewall configuration and do not persist stale entries.
+
+  # ── Platinum ─────────────────────────────────────────────────────────────
+  async-dependency:
+    status: todo
+    comment: >
+      puresnmp 2.x is async-capable but uses blocking plugin discovery on
+      import. A custom preload() workaround patches the loader at startup.
+      A fully async SNMP library would remove this complexity.
+  inject-websession:
+    status: exempt
+    comment: >
+      The XML API client uses its own aiohttp.ClientSession with a bounded
+      TCPConnector (limit=2) because the Sophos firewall drops idle Keep-Alive
+      connections. Sharing HA's session would reintroduce the stale-socket
+      errors this architecture was designed to prevent.
+  strict-typing:
+    status: todo
+    comment: >
+      Core coordinator and entity types use type annotations. Full mypy strict
+      compliance (no implicit Any, complete TypedDict coverage) is planned.

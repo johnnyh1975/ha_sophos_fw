@@ -1,0 +1,238 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Sophos Firewall — Connection",
+        "description": "Connection details for your Sophos Firewall (XML API, port 4444).",
+        "data": {
+          "host": "Hostname or IP address",
+          "port": "API port",
+          "username": "Username",
+          "password": "Password",
+          "verify_ssl": "Verify SSL certificate"
+        }
+      },
+      "snmp": {
+        "title": "Sophos Firewall — SNMP (optional)",
+        "description": "Enable SNMP for CPU, RAM, uptime, license and service status.\nSNMP must be enabled on the firewall under System → Administration → SNMP.",
+        "data": {
+          "snmp_enabled": "Enable SNMP",
+          "snmp_community": "Community string",
+          "snmp_version": "SNMP version"
+        }
+      },
+      "write_access": {
+        "title": "Sophos Firewall — Write access",
+        "description": "⚠ Write access allows enabling/disabling firewall rules and web filter policies directly from Home Assistant.\n\nDisabled by default. Only enable if you know what you are doing.",
+        "data": {
+          "write_access": "Enable write access"
+        }
+      },
+      "polling": {
+        "title": "Polling configuration",
+        "description": "Configure which data is fetched and how often. All default values are optimally pre-configured.\n\nWrite operations from HA (switches) always trigger an immediate refresh.",
+        "sections": {
+          "realtime": {
+            "name": "⚡ Realtime",
+            "description": "Data that changes frequently (interfaces, system metrics, services)",
+            "data": {
+              "interval_realtime": "Interval in seconds",
+              "poll_xml_interfaces": "Interfaces — PortA/PortB status and zone",
+              "poll_snmp_stats": "System statistics — RAM, disk, traffic, uptime",
+              "poll_snmp_services": "Services — IPS, AV, DNS, VPN (21 services)"
+            }
+          },
+          "fast": {
+            "name": "🔄 Fast",
+            "description": "Data that changes occasionally (VPN tunnels, HA status)",
+            "data": {
+              "interval_fast": "Interval in seconds",
+              "poll_snmp_tunnels": "VPN tunnels — IPSec connection status",
+              "poll_snmp_ha": "HA status — High Availability"
+            }
+          },
+          "operative": {
+            "name": "🔧 Operative",
+            "description": "Data that rarely changes (firewall rules, hardware temps)",
+            "data": {
+              "interval_operative": "Interval in seconds",
+              "poll_xml_fw_rules": "Firewall rules — all rules with status",
+              "poll_snmp_health": "System health — temperatures, fans (hardware only)"
+            }
+          },
+          "static": {
+            "name": "🗄 Static",
+            "description": "Data that almost never changes (DHCP leases, web filter, licenses)",
+            "data": {
+              "interval_static": "Interval in seconds",
+              "poll_xml_dhcp": "DHCP + static leases — device MAC/IP/hostname",
+              "poll_xml_webfilter": "Web filter — default action allow/deny",
+              "poll_xml_backup": "Backup configuration — frequency",
+              "poll_snmp_licenses": "Licenses — status and expiry dates"
+            }
+          }
+        },
+        "data": {}
+      },
+      "reconfigure": {
+        "title": "Reconfigure {name}",
+        "description": "Update the connection settings for your Sophos Firewall.",
+        "data": {
+          "host": "Hostname or IP address",
+          "port": "API port",
+          "username": "Username",
+          "password": "Password",
+          "verify_ssl": "Verify SSL certificate"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Username or password incorrect.",
+      "cannot_connect": "Connection to firewall failed. Check host and port.",
+      "snmp_not_available": "puresnmp not yet installed. Restart HA then enable SNMP via 'Configure'.",
+      "snmp_cannot_connect": "SNMP agent not reachable. Check community string and firewall configuration.",
+      "unknown": "Unexpected error. Check the logs."
+    },
+    "abort": {
+      "already_configured": "This firewall is already configured.",
+      "reconfigure_successful": "Connection settings updated successfully."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Settings",
+        "description": "SNMP credentials and polling configuration. Enabling SNMP will test the connection.",
+        "sections": {
+          "realtime": {
+            "name": "⚡ Realtime",
+            "description": "Data that changes frequently",
+            "data": {
+              "interval_realtime": "Interval in seconds",
+              "poll_xml_interfaces": "Interfaces — PortA/PortB status and zone",
+              "poll_snmp_stats": "System statistics — RAM, disk, traffic, uptime",
+              "poll_snmp_services": "Services — IPS, AV, DNS, VPN (21 services)"
+            }
+          },
+          "fast": {
+            "name": "🔄 Fast",
+            "description": "Data that changes occasionally",
+            "data": {
+              "interval_fast": "Interval in seconds",
+              "poll_snmp_tunnels": "VPN tunnels — IPSec connection status",
+              "poll_snmp_ha": "HA status — High Availability"
+            }
+          },
+          "operative": {
+            "name": "🔧 Operative",
+            "description": "Data that rarely changes",
+            "data": {
+              "interval_operative": "Interval in seconds",
+              "poll_xml_fw_rules": "Firewall rules — all rules with status",
+              "poll_snmp_health": "System health — temperatures, fans (hardware only)"
+            }
+          },
+          "static": {
+            "name": "🗄 Static",
+            "description": "Data that almost never changes",
+            "data": {
+              "interval_static": "Interval in seconds",
+              "poll_xml_dhcp": "DHCP + static leases — device MAC/IP/hostname",
+              "poll_xml_webfilter": "Web filter — default action allow/deny",
+              "poll_xml_backup": "Backup configuration — frequency",
+              "poll_snmp_licenses": "Licenses — status and expiry dates"
+            }
+          }
+        },
+        "data": {
+          "snmp_enabled": "Enable SNMP",
+          "snmp_community": "SNMP community string",
+          "snmp_version": "SNMP version",
+          "write_access": "Write access (firewall rules, web filter)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "interface_status": {
+        "name": "Interface {name}"
+      },
+      "firewall_rule_status": {
+        "name": "Rule {name}"
+      },
+      "vpn_tunnel_status": {
+        "name": "VPN {name}"
+      }
+    },
+    "sensor": {
+      "services_summary": {
+        "name": "Services"
+      },
+      "licenses_summary": {
+        "name": "Licenses"
+      },
+      "memory_percent": {
+        "name": "RAM usage"
+      },
+      "disk_percent": {
+        "name": "Disk usage"
+      },
+      "swap_percent": {
+        "name": "Swap usage"
+      },
+      "uptime": {
+        "name": "Uptime"
+      },
+      "http_hits": {
+        "name": "HTTP connections"
+      },
+      "smtp_hits": {
+        "name": "SMTP connections"
+      },
+      "live_users": {
+        "name": "Active captive portal users"
+      },
+      "cpu_temperature": {
+        "name": "CPU temperature"
+      },
+      "npu_temperature": {
+        "name": "NPU temperature"
+      },
+      "fan_speed": {
+        "name": "Fan {fan}"
+      },
+      "dhcp_leases": {
+        "name": "DHCP leases {server}"
+      },
+      "web_filter_default_action": {
+        "name": "Web filter default action"
+      },
+      "backup_frequency": {
+        "name": "Backup frequency"
+      },
+      "ftp_hits": {
+        "name": "FTP connections"
+      },
+      "ips_version": {
+        "name": "IPS signature version"
+      },
+      "webcat_version": {
+        "name": "Web category version"
+      }
+    },
+    "switch": {
+      "firewall_rule": {
+        "name": "Rule {name}"
+      },
+      "web_filter_policy": {
+        "name": "Web filter {name}"
+      }
+    },
+    "button": {
+      "trigger_backup": {
+        "name": "Trigger backup"
+      }
+    }
+  }
+}
