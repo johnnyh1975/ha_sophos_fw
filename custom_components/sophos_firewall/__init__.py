@@ -22,7 +22,7 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 
 from .const import (
     CONF_SNMP_COMMUNITY,
@@ -72,13 +72,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: SophosConfigEntry) -> bo
     except SophosAuthError as exc:
         await xml_client.close()
         raise ConfigEntryNotReady(
-            f"Authentifizierung fehlgeschlagen — Benutzername/Passwort prüfen."
+            translation_domain=DOMAIN,
+            translation_key="setup_auth_failed",
         ) from exc
     except (SophosAPIError, TimeoutError, OSError) as exc:
         await xml_client.close()
         raise ConfigEntryNotReady(
-            f"Sophos Firewall unter {entry.data[CONF_HOST]}:{entry.data[CONF_PORT]} "
-            f"nicht erreichbar — {exc}"
+            translation_domain=DOMAIN,
+            translation_key="setup_cannot_connect",
+            translation_placeholders={
+                "host": entry.data[CONF_HOST],
+                "port": str(entry.data[CONF_PORT]),
+            },
         ) from exc
 
     # ── Phase 2: SNMP MPM preload in executor ─────────────────────────────────

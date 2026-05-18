@@ -291,6 +291,53 @@ class SophosFirewallConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders=_polling_placeholders(),
         )
 
+    async def async_step_reauth(
+        self, entry_data: dict[str, Any]
+    ) -> FlowResult:
+        """Initiate re-authentication after a credential failure.
+
+        Called automatically by HA when ConfigEntryAuthFailed is raised.
+        We store the existing entry reference so async_step_reauth_confirm
+        can update only the password while keeping all other settings.
+        """
+        self._reauth_entry = self.hass.config_entries.async_get_entry(
+            self.context["entry_id"]
+        )
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Show re-authentication form and validate new credentials."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            test_data = {
+                **self._reauth_entry.data,
+                CONF_PASSWORD: user_input[CONF_PASSWORD],
+            }
+            errors = await self._test_xml_connection(test_data)
+            if not errors:
+                return self.async_update_reload_and_abort(
+                    self._reauth_entry,
+                    data_updates={CONF_PASSWORD: user_input[CONF_PASSWORD]},
+                    reason="reauth_successful",
+                )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
+            description_placeholders={
+                "host": self._reauth_entry.data.get(CONF_HOST, ""),
+                "username": self._reauth_entry.data.get(CONF_USERNAME, "admin"),
+            },
+            errors=errors,
+        )
+
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:

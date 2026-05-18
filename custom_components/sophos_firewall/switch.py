@@ -12,6 +12,7 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -46,19 +47,48 @@ async def async_setup_entry(
         data = coordinator.data
         if not data:
             return
+        reg = er.async_get(coordinator.hass)
         new_entities: list[SwitchEntity] = []
 
+        # ── Firewall rule switches ─────────────────────────────────────────────
+        current_rule_names: set[str] = {
+            r.get("Name", "") for r in data.get(DATA_FIREWALL_RULES, [])
+        }
         for rule in data.get(DATA_FIREWALL_RULES, []):
             uid = f"{entry.entry_id}_switch_fwrule_{rule.get('Name','')}"
             if uid not in added_ids:
                 added_ids.add(uid)
                 new_entities.append(SophosFirewallRuleSwitch(coordinator, rule))
 
+        for uid in list(added_ids):
+            if not uid.startswith(f"{entry.entry_id}_switch_fwrule_"):
+                continue
+            name = uid[len(f"{entry.entry_id}_switch_fwrule_"):]
+            if name not in current_rule_names:
+                entity_id = reg.async_get_entity_id("switch", "sophos_firewall", uid)
+                if entity_id:
+                    reg.async_remove(entity_id)
+                added_ids.discard(uid)
+
+        # ── Web filter switches ────────────────────────────────────────────────
+        current_policy_names: set[str] = {
+            p.get("Name", "") for p in data.get(DATA_WEB_FILTER_POLICIES, [])
+        }
         for policy in data.get(DATA_WEB_FILTER_POLICIES, []):
             uid = f"{entry.entry_id}_switch_webfilter_{policy.get('Name','')}"
             if uid not in added_ids:
                 added_ids.add(uid)
                 new_entities.append(SophosWebFilterSwitch(coordinator, policy))
+
+        for uid in list(added_ids):
+            if not uid.startswith(f"{entry.entry_id}_switch_webfilter_"):
+                continue
+            name = uid[len(f"{entry.entry_id}_switch_webfilter_"):]
+            if name not in current_policy_names:
+                entity_id = reg.async_get_entity_id("switch", "sophos_firewall", uid)
+                if entity_id:
+                    reg.async_remove(entity_id)
+                added_ids.discard(uid)
 
         if new_entities:
             _LOGGER.debug("Adding %d switch entities", len(new_entities))

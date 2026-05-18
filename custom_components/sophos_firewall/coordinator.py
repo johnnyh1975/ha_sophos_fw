@@ -37,11 +37,11 @@ import asyncio
 import logging
 import time
 from datetime import timedelta
-from typing import Any
+from typing import Any, TypedDict
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -81,7 +81,28 @@ _LOGGER = logging.getLogger(__name__)
 _XML_CONCURRENCY = 2
 
 
-class SophosCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+class SophosData(TypedDict):
+    """Typed structure of coordinator data shared with all entity platforms."""
+
+    # XML API
+    interfaces:           list[dict[str, Any]]
+    zones:                list[dict[str, Any]]
+    firewall_rules:       list[dict[str, Any]]
+    web_filter_policies:  list[dict[str, Any]]
+    dhcp_servers:         list[dict[str, Any]]
+    backup:               dict[str, Any]
+    admin:                dict[str, Any]
+    # SNMP
+    snmp_device:          dict[str, Any]
+    snmp_stats:           dict[str, Any]
+    snmp_services:        dict[str, Any]
+    snmp_licenses:        dict[str, Any]
+    snmp_tunnels:         list[dict[str, Any]]
+    snmp_health:          dict[str, Any]
+    snmp_ha:              dict[str, Any]
+
+
+class SophosCoordinator(DataUpdateCoordinator[SophosData]):
     """Tiered polling coordinator for Sophos Firewall XML API and SNMP."""
 
     def __init__(
@@ -171,7 +192,7 @@ class SophosCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     # ── Main update ───────────────────────────────────────────────────────────
 
-    async def _async_update_data(self) -> dict[str, Any]:
+    async def _async_update_data(self) -> SophosData:
         """Fetch data according to the tiered polling schedule."""
         now = time.monotonic()
 
@@ -210,11 +231,30 @@ class SophosCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "Re-login failed — credentials invalid or firewall unreachable: %s",
                     exc2,
                 )
-                raise ConfigEntryAuthFailed(str(exc2)) from exc2
+                raise ConfigEntryAuthFailed(
+                    translation_domain=DOMAIN,
+                    translation_key="auth_failed",
+                ) from exc2
             except SophosAPIError as exc2:
-                raise UpdateFailed(f"XML API error on retry: {exc2}") from exc2
+                raise UpdateFailed(
+                    translation_domain=DOMAIN,
+                    translation_key="xml_api_error",
+                ) from exc2
+            else:
+                # Re-login succeeded — reset all tier timestamps so every tier
+                # runs on the next cycle regardless of when it last ran.
+                # Without this, tiers that were "not due" before the auth error
+                # would silently skip their first fetch after recovery.
+                self._last_realtime  = 0.0
+                self._last_fast      = 0.0
+                self._last_operative = 0.0
+                self._last_static    = 0.0
+                self._once_done      = False
         except SophosAPIError as exc:
-            raise UpdateFailed(f"XML API error: {exc}") from exc
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="xml_api_error",
+            ) from exc
 
         # ── SNMP ──────────────────────────────────────────────────────────────
         if self._snmp_enabled:
@@ -336,83 +376,120 @@ class SophosCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         def _keep(key: str) -> Any:
             return self.data.get(key) if self.data else None
 
-        try:
-            # ── Tier 1 REALTIME ───────────────────────────────────────────────
-            coros_realtime = []
-            keys_realtime  = []
-            if realtime and self._poll_snmp_stats:
-                coros_realtime.append(self._snmp_client.get_stats())
-                keys_realtime.append(DATA_SNMP_STATS)
-            if realtime and self._poll_snmp_services:
-                coros_realtime.append(self._snmp_client.get_services())
-                keys_realtime.append(DATA_SNMP_SERVICES)
+        async def _gather_tier(
+            tier_name: str,
+            coros: list,
+            keys: list[str],
+            defaults: dict[str, Any],
+        ) -> dict[str, Any]:
+            """Run one SNMP tier with return_exceptions so a single failing OID
+            doesn't abort all other tiers.  Network errors are logged as warning
+            (non-fatal); unexpected errors as error."""
+            if not coros:
+                return {}
+            raw = await asyncio.gather(*coros, return_exceptions=True)
+            result: dict[str, Any] = {}
+            for key, val in zip(keys, raw):
+                if isinstance(val, (asyncio.TimeoutError, OSError)):
+                    _LOGGER.warning(
+                        "SNMP tier %s: network error for %s (%s) — retaining cached value",
+                        tier_name, key, val,
+                    )
+                    result[key] = _keep(key) if self.data else defaults.get(key)
+                elif isinstance(val, Exception):
+                    _LOGGER.error(
+                        "SNMP tier %s: unexpected error for %s (%s)",
+                        tier_name, key, val, exc_info=val,
+                    )
+                    result[key] = _keep(key) if self.data else defaults.get(key)
+                else:
+                    result[key] = val
+            return result
 
-            results_realtime = await asyncio.gather(*coros_realtime) if coros_realtime else []
+        # ── Tier 1 REALTIME ───────────────────────────────────────────────
+        coros_realtime: list = []
+        keys_realtime:  list[str] = []
+        if realtime and self._poll_snmp_stats:
+            coros_realtime.append(self._snmp_client.get_stats())
+            keys_realtime.append(DATA_SNMP_STATS)
+        if realtime and self._poll_snmp_services:
+            coros_realtime.append(self._snmp_client.get_services())
+            keys_realtime.append(DATA_SNMP_SERVICES)
 
-            # ── Tier 2 FAST ───────────────────────────────────────────────────
-            coros_fast = []
-            keys_fast  = []
-            if fast and self._poll_snmp_tunnels:
-                coros_fast.append(self._snmp_client.get_vpn_tunnels())
-                keys_fast.append(DATA_SNMP_TUNNELS)
-            if fast and self._poll_snmp_ha:
-                coros_fast.append(self._snmp_client.get_ha_status())
-                keys_fast.append(DATA_SNMP_HA)
+        results_realtime = await _gather_tier(
+            "realtime", coros_realtime, keys_realtime,
+            {DATA_SNMP_STATS: {}, DATA_SNMP_SERVICES: {}},
+        )
 
-            results_fast = await asyncio.gather(*coros_fast) if coros_fast else []
+        # ── Tier 2 FAST ───────────────────────────────────────────────────
+        coros_fast: list = []
+        keys_fast:  list[str] = []
+        if fast and self._poll_snmp_tunnels:
+            coros_fast.append(self._snmp_client.get_vpn_tunnels())
+            keys_fast.append(DATA_SNMP_TUNNELS)
+        if fast and self._poll_snmp_ha:
+            coros_fast.append(self._snmp_client.get_ha_status())
+            keys_fast.append(DATA_SNMP_HA)
 
-            # SNMP Tier 3 OPERATIVE
-            coros_op = []
-            keys_op  = []
-            # Skip health polling on confirmed virtual appliances —
-            # temperature/fan OIDs always return None on SFVH
-            poll_health = self._poll_snmp_health and self._is_virtual is not True
-            if operative and poll_health:
-                coros_op.append(self._snmp_client.get_system_health())
-                keys_op.append(DATA_SNMP_HEALTH)
+        results_fast = await _gather_tier(
+            "fast", coros_fast, keys_fast,
+            {DATA_SNMP_TUNNELS: [], DATA_SNMP_HA: {}},
+        )
 
-            results_op = await asyncio.gather(*coros_op) if coros_op else []
+        # ── Tier 3 OPERATIVE ─────────────────────────────────────────────
+        coros_op: list = []
+        keys_op:  list[str] = []
+        # Skip health polling on confirmed virtual appliances —
+        # temperature/fan OIDs always return None on SFVH
+        poll_health = self._poll_snmp_health and self._is_virtual is not True
+        if operative and poll_health:
+            coros_op.append(self._snmp_client.get_system_health())
+            keys_op.append(DATA_SNMP_HEALTH)
 
-            # ── Tier 4 STATIC ─────────────────────────────────────────────────
-            coros_static = []
-            keys_static  = []
-            if static and self._poll_snmp_licenses:
-                coros_static.append(self._snmp_client.get_licenses())
-                keys_static.append(DATA_SNMP_LICENSES)
+        results_op = await _gather_tier(
+            "operative", coros_op, keys_op,
+            {DATA_SNMP_HEALTH: {}},
+        )
 
-            results_static = await asyncio.gather(*coros_static) if coros_static else []
+        # ── Tier 4 STATIC ─────────────────────────────────────────────────
+        coros_static: list = []
+        keys_static:  list[str] = []
+        if static and self._poll_snmp_licenses:
+            coros_static.append(self._snmp_client.get_licenses())
+            keys_static.append(DATA_SNMP_LICENSES)
 
-            # ── Tier 5 ONCE ───────────────────────────────────────────────────
-            coros_once = []
-            keys_once  = []
-            if once and self._poll_snmp_device:
-                coros_once.append(self._snmp_client.get_device_info())
-                keys_once.append(DATA_SNMP_DEVICE)
+        results_static = await _gather_tier(
+            "static", coros_static, keys_static,
+            {DATA_SNMP_LICENSES: {}},
+        )
 
-            results_once = await asyncio.gather(*coros_once) if coros_once else []
+        # ── Tier 5 ONCE ───────────────────────────────────────────────────
+        coros_once: list = []
+        keys_once:  list[str] = []
+        if once and self._poll_snmp_device:
+            coros_once.append(self._snmp_client.get_device_info())
+            keys_once.append(DATA_SNMP_DEVICE)
 
-        except (asyncio.TimeoutError, OSError) as exc:
-            _LOGGER.warning("SNMP fetch failed (network, non-fatal): %s", exc)
-            return self._retained_or_empty_snmp()
-        except Exception as exc:
-            # Unerwarteter Fehler (z.B. puresnmp-Bug) — logge als error, nicht warning
-            _LOGGER.error("SNMP fetch unexpected error: %s", exc, exc_info=True)
-            return self._retained_or_empty_snmp()
+        results_once = await _gather_tier(
+            "once", coros_once, keys_once,
+            {DATA_SNMP_DEVICE: {}},
+        )
 
         # ── Merge results with previous data ──────────────────────────────────
-        def _result(keys: list, results: list, data_key: str, default: Any) -> Any:
-            if data_key in keys:
-                return results[keys.index(data_key)]
-            return _keep(data_key) if self.data else default
+        def _r(tier_result: dict[str, Any], data_key: str, default: Any) -> Any:
+            """Return fetched value from tier dict, or fall back to cached/default."""
+            if data_key in tier_result:
+                return tier_result[data_key]
+            return (_keep(data_key) if self.data else None) or default
 
         return {
-            DATA_SNMP_STATS:    _result(keys_realtime, results_realtime, DATA_SNMP_STATS,    {}),
-            DATA_SNMP_SERVICES: _result(keys_realtime, results_realtime, DATA_SNMP_SERVICES, {}),
-            DATA_SNMP_TUNNELS:  _result(keys_fast,     results_fast,     DATA_SNMP_TUNNELS,  []),
-            DATA_SNMP_HA:       _result(keys_fast,     results_fast,     DATA_SNMP_HA,       {}),
-            DATA_SNMP_HEALTH:   _result(keys_op,       results_op,       DATA_SNMP_HEALTH,   {}),
-            DATA_SNMP_LICENSES: _result(keys_static,   results_static,   DATA_SNMP_LICENSES, {}),
-            DATA_SNMP_DEVICE:   _result(keys_once,     results_once,     DATA_SNMP_DEVICE,   {}),
+            DATA_SNMP_STATS:    _r(results_realtime, DATA_SNMP_STATS,    {}),
+            DATA_SNMP_SERVICES: _r(results_realtime, DATA_SNMP_SERVICES, {}),
+            DATA_SNMP_TUNNELS:  _r(results_fast,     DATA_SNMP_TUNNELS,  []),
+            DATA_SNMP_HA:       _r(results_fast,     DATA_SNMP_HA,       {}),
+            DATA_SNMP_HEALTH:   _r(results_op,       DATA_SNMP_HEALTH,   {}),
+            DATA_SNMP_LICENSES: _r(results_static,   DATA_SNMP_LICENSES, {}),
+            DATA_SNMP_DEVICE:   _r(results_once,     DATA_SNMP_DEVICE,   {}),
         }
 
     def _detect_virtual_appliance(self, snmp_data: dict) -> None:

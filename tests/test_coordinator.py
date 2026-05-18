@@ -180,6 +180,78 @@ async def test_xml_api_error_raises_update_failed(mock_entry):
         await coord._async_update_data()
 
 
+@pytest.mark.asyncio
+async def test_tier_timestamps_reset_after_relogin(mock_entry):
+    """After a successful re-login, all tier timestamps are reset to 0
+    so every tier runs on the very next cycle."""
+    from custom_components.sophos_firewall.sophos_client import SophosAuthError
+
+    coord = make_coordinator(mock_entry, snmp_enabled=False)
+    # Simulate tiers that ran recently
+    coord._last_realtime  = 9999.0
+    coord._last_fast      = 9999.0
+    coord._last_operative = 9999.0
+    coord._last_static    = 9999.0
+    coord._once_done      = True
+
+    # First call raises auth error; second call (re-login retry) succeeds
+    call_count = {"n": 0}
+    async def _sometimes_fail():
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise SophosAuthError("session expired")
+        return [{"Name": "PortA", "InterfaceStatus": "ON"}]
+
+    coord.xml_client.get_interfaces = _sometimes_fail
+
+    await coord._async_update_data()
+
+    # All timestamps must be back to 0 so every tier fires next cycle
+    assert coord._last_realtime  == 0.0
+    assert coord._last_fast      == 0.0
+    assert coord._last_operative == 0.0
+    assert coord._last_static    == 0.0
+    assert coord._once_done      is False
+
+
+@pytest.mark.asyncio
+async def test_snmp_partial_tier_failure_leaves_other_tiers_intact(mock_entry):
+    """A timeout in SNMP realtime does not wipe fast/operative/static data."""
+    import asyncio
+
+    coord = make_coordinator(mock_entry, snmp_enabled=True)
+    # Realtime fails; other tiers succeed normally
+    coord._snmp_client.get_stats    = AsyncMock(side_effect=asyncio.TimeoutError())
+    coord._snmp_client.get_services = AsyncMock(side_effect=asyncio.TimeoutError())
+
+    data = await coord._fetch_snmp(
+        realtime=True, fast=True, operative=False, static=False, once=True
+    )
+    # Realtime data absent (or None/empty due to failure)
+    assert data.get(DATA_SNMP_STATS) in (None, {})
+    # Fast-tier VPN tunnels still fetched successfully
+    from custom_components.sophos_firewall.const import DATA_SNMP_TUNNELS
+    assert data[DATA_SNMP_TUNNELS] is not None
+
+
+@pytest.mark.asyncio
+async def test_snmp_single_oid_failure_does_not_affect_sibling(mock_entry):
+    """Within a tier, one failing OID does not prevent the sibling from being returned."""
+    import asyncio
+    from custom_components.sophos_firewall.const import DATA_SNMP_SERVICES
+
+    coord = make_coordinator(mock_entry, snmp_enabled=True)
+    # stats fails, services succeeds
+    coord._snmp_client.get_stats    = AsyncMock(side_effect=asyncio.TimeoutError())
+    coord._snmp_client.get_services = AsyncMock(return_value={"dns": 3, "av": 3})
+
+    data = await coord._fetch_snmp(
+        realtime=True, fast=False, operative=False, static=False, once=False
+    )
+    assert data.get(DATA_SNMP_STATS) in (None, {})
+    assert data[DATA_SNMP_SERVICES] == {"dns": 3, "av": 3}
+
+
 # ── Session lifecycle ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

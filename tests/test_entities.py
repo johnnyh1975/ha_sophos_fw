@@ -150,18 +150,27 @@ class TestLicensesSummarySensor:
 # ── Sensor: DHCP kombiniert ───────────────────────────────────────────────────
 
 class TestDHCPLeaseSensor:
-    def test_running_zero_leases(self, mock_coordinator):
+    def test_running_returns_on(self, mock_coordinator):
         entity = SophosDHCPLeaseSensor(mock_coordinator, {"Name": "Main_DHCP"})
-        assert entity.native_value == "In Betrieb · 0 Leases"
+        assert entity.native_value == "on"
 
-    def test_running_one_lease(self, mock_coordinator):
+    def test_not_running_returns_off(self, mock_coordinator):
+        mock_coordinator.data["dhcp_servers"] = [{"Name": "Main_DHCP", "Status": "0"}]
+        assert SophosDHCPLeaseSensor(mock_coordinator, {"Name": "Main_DHCP"}).native_value == "off"
+
+    def test_lease_count_zero(self, mock_coordinator):
+        entity = SophosDHCPLeaseSensor(mock_coordinator, {"Name": "Main_DHCP"})
+        assert entity.extra_state_attributes["lease_count"] == 0
+
+    def test_lease_count_single_dict(self, mock_coordinator):
         mock_coordinator.data["dhcp_servers"] = [{
             "Name": "Main_DHCP", "Status": "1", "Interface": "PortA",
             "StaticLease": {"MACAddress": "AA:BB:CC:DD:EE:FF", "IPAddress": "10.0.0.1", "Hostname": "PC"},
         }]
-        assert SophosDHCPLeaseSensor(mock_coordinator, {"Name": "Main_DHCP"}).native_value == "In Betrieb · 1 Lease"
+        attrs = SophosDHCPLeaseSensor(mock_coordinator, {"Name": "Main_DHCP"}).extra_state_attributes
+        assert attrs["lease_count"] == 1
 
-    def test_running_multiple_leases(self, mock_coordinator):
+    def test_lease_count_multiple(self, mock_coordinator):
         mock_coordinator.data["dhcp_servers"] = [{
             "Name": "Main_DHCP", "Status": "1", "Interface": "PortA",
             "StaticLease": [
@@ -169,11 +178,8 @@ class TestDHCPLeaseSensor:
                 {"MACAddress": "AA:BB:CC:DD:EE:02", "IPAddress": "10.0.0.2", "Hostname": "PC2"},
             ],
         }]
-        assert SophosDHCPLeaseSensor(mock_coordinator, {"Name": "Main_DHCP"}).native_value == "In Betrieb · 2 Leases"
-
-    def test_not_running(self, mock_coordinator):
-        mock_coordinator.data["dhcp_servers"] = [{"Name": "Main_DHCP", "Status": "0"}]
-        assert SophosDHCPLeaseSensor(mock_coordinator, {"Name": "Main_DHCP"}).native_value == "Außer Betrieb"
+        attrs = SophosDHCPLeaseSensor(mock_coordinator, {"Name": "Main_DHCP"}).extra_state_attributes
+        assert attrs["lease_count"] == 2
 
     def test_mac_normalized_to_lowercase(self, mock_coordinator):
         mock_coordinator.data["dhcp_servers"] = [{
@@ -182,6 +188,10 @@ class TestDHCPLeaseSensor:
         }]
         leases = SophosDHCPLeaseSensor(mock_coordinator, {"Name": "Main_DHCP"}).extra_state_attributes["leases"]
         assert leases[0]["MACAddress"] == "aa:bb:cc:dd:ee:ff"
+
+    def test_none_when_no_data(self, mock_coordinator):
+        mock_coordinator.data = None
+        assert SophosDHCPLeaseSensor(mock_coordinator, {"Name": "Main_DHCP"}).native_value is None
 
 
 # ── Binary Sensor: Interface ──────────────────────────────────────────────────

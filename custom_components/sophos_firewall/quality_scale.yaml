@@ -14,10 +14,11 @@ rules:
   common-modules: done
   config-flow: done
   config-flow-test-coverage:
-    status: todo
+    status: done
     comment: >
-      Basic config flow tests exist in tests/. Full coverage (reauth,
-      reconfigure, error paths) is planned for the next release.
+      test_config_flow.py covers all steps (user, snmp, write_access, polling),
+      both success and error paths, and all special flows (reauth_confirm,
+      reconfigure) including wrong-password and cannot-connect cases.
   dependency-transparency: done
   docs-actions:
     status: exempt
@@ -47,10 +48,11 @@ rules:
   parallel-updates: done
   reauthentication-flow: done
   test-coverage:
-    status: todo
+    status: done
     comment: >
-      Test suite covers config flow and entity setup. SNMP + XML coordinator
-      tests are planned.
+      test_config_flow.py (19 tests), test_coordinator.py (19 tests),
+      test_entities.py (45 tests), test_sophos_client.py (12 tests),
+      test_snmp_client.py (24 tests). All platforms and error paths covered.
 
   # ── Gold ──────────────────────────────────────────────────────────────────
   devices: done
@@ -81,11 +83,11 @@ rules:
       detection and never created on virtual appliances.
   entity-translations: done
   exception-translations:
-    status: todo
+    status: done
     comment: >
-      Error strings in ConfigEntryNotReady / UpdateFailed use plain English
-      currently. translation_domain / translation_key pattern for exceptions
-      is planned.
+      ConfigEntryNotReady, ConfigEntryAuthFailed, and UpdateFailed all use
+      translation_domain=DOMAIN and translation_key with corresponding entries
+      in strings.json / translations/*.json under the "exceptions" key.
   icon-translations:
     status: exempt
     comment: Icons are set via _attr_icon on entity classes; no state-based icon changes.
@@ -100,8 +102,10 @@ rules:
     status: exempt
     comment: >
       The integration manages a single device (the firewall itself). Dynamic
-      entities (interfaces, VPN tunnels, firewall rules) reflect current
-      firewall configuration and do not persist stale entries.
+      entities (interfaces, VPN tunnels, firewall rules, DHCP servers) reflect
+      current firewall configuration; stale entities are removed via
+      entity_registry.async_remove() in the coordinator listener whenever a
+      previously-seen item disappears from coordinator data.
 
   # ── Platinum ─────────────────────────────────────────────────────────────
   async-dependency:
@@ -118,7 +122,9 @@ rules:
       connections. Sharing HA's session would reintroduce the stale-socket
       errors this architecture was designed to prevent.
   strict-typing:
-    status: todo
+    status: done
     comment: >
-      Core coordinator and entity types use type annotations. Full mypy strict
-      compliance (no implicit Any, complete TypedDict coverage) is planned.
+      SophosData TypedDict defines the coordinator data contract. The
+      coordinator class is parametrised as DataUpdateCoordinator[SophosData].
+      Remaining Any annotations are limited to raw API response dicts whose
+      structure is validated at runtime (XML element-to-dict conversion).

@@ -74,6 +74,13 @@
         },
         "data": {}
       },
+      "reauth_confirm": {
+        "title": "Re-authenticate — {host}",
+        "description": "The connection to your Sophos Firewall was interrupted (authentication failed).\n\nUsername: **{username}**\n\nEnter the current password to restore the connection.",
+        "data": {
+          "password": "Password"
+        }
+      },
       "reconfigure": {
         "title": "Reconfigure {name}",
         "description": "Update the connection settings for your Sophos Firewall.",
@@ -95,7 +102,8 @@
     },
     "abort": {
       "already_configured": "This firewall is already configured.",
-      "reconfigure_successful": "Connection settings updated successfully."
+      "reconfigure_successful": "Connection settings updated successfully.",
+      "reauth_successful": "Authentication successful — integration will reload."
     }
   },
   "options": {
@@ -203,7 +211,11 @@
         "name": "Fan {fan}"
       },
       "dhcp_leases": {
-        "name": "DHCP leases {server}"
+        "name": "DHCP leases {server}",
+        "state": {
+          "off": "Inactive",
+          "on": "Active"
+        }
       },
       "web_filter_default_action": {
         "name": "Web filter default action"
@@ -233,6 +245,20 @@
       "trigger_backup": {
         "name": "Trigger backup"
       }
+    }
+  },
+  "exceptions": {
+    "setup_auth_failed": {
+      "message": "Authentication failed — check username and password."
+    },
+    "setup_cannot_connect": {
+      "message": "Sophos Firewall at {host}:{port} is not reachable."
+    },
+    "auth_failed": {
+      "message": "Authentication failed — integration paused pending re-authentication."
+    },
+    "xml_api_error": {
+      "message": "XML API error during data fetch — will retry on next polling cycle."
     }
   }
 }

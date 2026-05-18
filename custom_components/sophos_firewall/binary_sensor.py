@@ -21,11 +21,13 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
+    CONF_SNMP_ENABLED,
     CONF_WRITE_ACCESS,
     DATA_INTERFACES,
     DATA_FIREWALL_RULES,
@@ -50,7 +52,7 @@ async def async_setup_entry(
     first successful fetch, via a coordinator listener.
     """
     coordinator: SophosCoordinator = entry.runtime_data
-    snmp_enabled: bool = entry.data.get("snmp_enabled", False)
+    snmp_enabled: bool = entry.data.get(CONF_SNMP_ENABLED, False)
     write_access: bool = entry.data.get(CONF_WRITE_ACCESS, False)
     added_ids: set[str] = set()
 
@@ -59,34 +61,75 @@ async def async_setup_entry(
         if not data:
             return
 
+        reg = er.async_get(coordinator.hass)
         new_entities: list[BinarySensorEntity] = []
 
-        # Interfaces
+        # ── Interfaces ────────────────────────────────────────────────────────
+        current_iface_names: set[str] = {
+            i.get("Name", "") for i in data.get(DATA_INTERFACES, [])
+        }
         for iface in data.get(DATA_INTERFACES, []):
             uid = f"{entry.entry_id}_iface_{iface.get('Name','')}"
             if uid not in added_ids:
                 added_ids.add(uid)
                 new_entities.append(SophosInterfaceSensor(coordinator, iface))
 
-        # Firewall rules als binary_sensor nur wenn write_access NICHT aktiv ist.
+        # Remove stale interface sensors
+        for uid in list(added_ids):
+            if not uid.startswith(f"{entry.entry_id}_iface_"):
+                continue
+            name = uid[len(f"{entry.entry_id}_iface_"):]
+            if name not in current_iface_names:
+                entity_id = reg.async_get_entity_id("binary_sensor", "sophos_firewall", uid)
+                if entity_id:
+                    reg.async_remove(entity_id)
+                added_ids.discard(uid)
+
+        # ── Firewall rules (read-only, no write_access) ───────────────────────
         # Mit write_access: Switch in switch.py übernimmt Zustand + Steuerung.
         # Ohne write_access: binary_sensor als Nur-Lese-Anzeige (EntityCategory.CONFIG).
         if not write_access:
+            current_rule_names: set[str] = {
+                r.get("Name", "") for r in data.get(DATA_FIREWALL_RULES, [])
+            }
             for rule in data.get(DATA_FIREWALL_RULES, []):
                 uid = f"{entry.entry_id}_fwrule_{rule.get('Name','')}"
                 if uid not in added_ids:
                     added_ids.add(uid)
                     new_entities.append(SophosFirewallRuleSensor(coordinator, rule))
 
-        # DHCP servers — kein binary_sensor mehr, zusammengeführt in SophosDHCPLeaseSensor (sensor.py)
+            # Remove stale rule sensors
+            for uid in list(added_ids):
+                if not uid.startswith(f"{entry.entry_id}_fwrule_"):
+                    continue
+                name = uid[len(f"{entry.entry_id}_fwrule_"):]
+                if name not in current_rule_names:
+                    entity_id = reg.async_get_entity_id("binary_sensor", "sophos_firewall", uid)
+                    if entity_id:
+                        reg.async_remove(entity_id)
+                    added_ids.discard(uid)
 
-        # VPN tunnels (SNMP)
+        # ── VPN tunnels (SNMP) ────────────────────────────────────────────────
         if snmp_enabled:
+            current_tunnel_idxs: set[str] = {
+                str(t.get("index", "")) for t in data.get(DATA_SNMP_TUNNELS, [])
+            }
             for tunnel in data.get(DATA_SNMP_TUNNELS, []):
                 uid = f"{entry.entry_id}_vpn_{tunnel.get('index','')}"
                 if uid not in added_ids:
                     added_ids.add(uid)
                     new_entities.append(SophosVPNTunnelSensor(coordinator, tunnel))
+
+            # Remove stale VPN sensors
+            for uid in list(added_ids):
+                if not uid.startswith(f"{entry.entry_id}_vpn_"):
+                    continue
+                idx = uid[len(f"{entry.entry_id}_vpn_"):]
+                if idx not in current_tunnel_idxs:
+                    entity_id = reg.async_get_entity_id("binary_sensor", "sophos_firewall", uid)
+                    if entity_id:
+                        reg.async_remove(entity_id)
+                    added_ids.discard(uid)
 
         if new_entities:
             _LOGGER.debug("Adding %d dynamic binary_sensor entities", len(new_entities))

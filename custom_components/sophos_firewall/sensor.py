@@ -24,9 +24,11 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    CONF_SNMP_ENABLED,
     DATA_BACKUP,
     DATA_DHCP_SERVERS,
     DATA_SNMP_DEVICE,
@@ -218,7 +220,7 @@ async def async_setup_entry(
                               - Temperature sensors (only if values are not None)
     """
     coordinator: SophosCoordinator = entry.runtime_data
-    snmp_enabled: bool = entry.data.get("snmp_enabled", False)
+    snmp_enabled: bool = entry.data.get(CONF_SNMP_ENABLED, False)
 
     # ── Phase 1: Static sensors ───────────────────────────────────────────────
     static_entities: list[SensorEntity] = [
@@ -243,12 +245,27 @@ async def async_setup_entry(
             return
         new_entities: list[SensorEntity] = []
 
-        # DHCP Lease sensors — one per DHCP server
+        # ── DHCP Lease sensors — one per DHCP server ──────────────────────────
+        current_dhcp_names: set[str] = {
+            s.get("Name", "") for s in data.get(DATA_DHCP_SERVERS, [])
+        }
         for server in data.get(DATA_DHCP_SERVERS, []):
             uid = f"{entry.entry_id}_dhcp_leases_{server.get('Name','')}"
             if uid not in added_ids:
                 added_ids.add(uid)
                 new_entities.append(SophosDHCPLeaseSensor(coordinator, server))
+
+        # Remove stale DHCP sensors whose server no longer exists
+        reg = er.async_get(coordinator.hass)
+        for uid in list(added_ids):
+            if not uid.startswith(f"{entry.entry_id}_dhcp_leases_"):
+                continue
+            server_name = uid[len(f"{entry.entry_id}_dhcp_leases_"):]
+            if server_name not in current_dhcp_names:
+                entity_id = reg.async_get_entity_id("sensor", "sophos_firewall", uid)
+                if entity_id:
+                    reg.async_remove(entity_id)
+                added_ids.discard(uid)
 
         if snmp_enabled:
             health = data.get(DATA_SNMP_HEALTH, {})
@@ -292,14 +309,16 @@ async def async_setup_entry(
 
 
 class SophosDHCPLeaseSensor(SophosEntity, SensorEntity):
-    """Kombinierter DHCP-Sensor: Server-Status + Lease-Anzahl in einem State.
+    """Kombinierter DHCP-Sensor: Server-Status + Lease-Anzahl.
 
-    State:      "Außer Betrieb" | "In Betrieb · 0 Leases" | "In Betrieb · 1 Lease" | ...
-    Attributes: leases (list), server_name, interface, lease_range
+    native_value:  "off" | "on"  (maschinenlesbar, lokalisierbar über translations)
+    Attributes:    lease_count (int) für Automationen/Graphen, plus server-Details
     """
 
     _attr_translation_key = "dhcp_leases"
     _attr_icon = "mdi:server-network"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["off", "on"]
 
     def __init__(
         self,
@@ -336,12 +355,7 @@ class SophosDHCPLeaseSensor(SophosEntity, SensorEntity):
         if not server:
             return None
         running = str(server.get("Status", "0")) == "1"
-        if not running:
-            return "Außer Betrieb"
-        count = len(self._get_leases())
-        if count == 1:
-            return "In Betrieb · 1 Lease"
-        return f"In Betrieb · {count} Leases"
+        return "on" if running else "off"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -355,6 +369,7 @@ class SophosDHCPLeaseSensor(SophosEntity, SensorEntity):
             "server_name":  self._server_name,
             "interface":    server.get("Interface"),
             "lease_range":  server.get("LeaseTime"),
+            "lease_count":  len(leases),
             "leases":       normalised,
         }
 

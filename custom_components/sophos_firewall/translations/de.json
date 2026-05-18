@@ -74,6 +74,13 @@
         },
         "data": {}
       },
+      "reauth_confirm": {
+        "title": "Erneut anmelden — {host}",
+        "description": "Die Verbindung zur Sophos Firewall wurde unterbrochen (Authentifizierung fehlgeschlagen).\n\nBenutzername: **{username}**\n\nBitte gib das aktuelle Passwort ein, um die Verbindung wiederherzustellen.",
+        "data": {
+          "password": "Passwort"
+        }
+      },
       "reconfigure": {
         "title": "Verbindung ändern — {name}",
         "description": "Verbindungseinstellungen der Sophos Firewall aktualisieren.",
@@ -95,7 +102,8 @@
     },
     "abort": {
       "already_configured": "Diese Firewall ist bereits konfiguriert.",
-      "reconfigure_successful": "Verbindungseinstellungen erfolgreich aktualisiert."
+      "reconfigure_successful": "Verbindungseinstellungen erfolgreich aktualisiert.",
+      "reauth_successful": "Authentifizierung erfolgreich — Integration wird neu geladen."
     }
   },
   "options": {
@@ -203,7 +211,11 @@
         "name": "System · Lüfter {fan}"
       },
       "dhcp_leases": {
-        "name": "Netz · DHCP-Leases {server}"
+        "name": "Netz · DHCP-Leases {server}",
+        "state": {
+          "off": "Außer Betrieb",
+          "on": "In Betrieb"
+        }
       },
       "web_filter_default_action": {
         "name": "Sicherheit · Web-Filter Standardaktion"
@@ -233,6 +245,20 @@
       "trigger_backup": {
         "name": "Backup auslösen"
       }
+    }
+  },
+  "exceptions": {
+    "setup_auth_failed": {
+      "message": "Authentifizierung fehlgeschlagen — Benutzername/Passwort prüfen."
+    },
+    "setup_cannot_connect": {
+      "message": "Sophos Firewall unter {host}:{port} nicht erreichbar."
+    },
+    "auth_failed": {
+      "message": "Authentifizierung fehlgeschlagen — Integration wird für Reauth pausiert."
+    },
+    "xml_api_error": {
+      "message": "XML-API-Fehler beim Datenabruf — nächster Versuch beim nächsten Polling-Zyklus."
     }
   }
 }
