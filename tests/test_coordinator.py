@@ -182,16 +182,29 @@ async def test_xml_api_error_raises_update_failed(mock_entry):
 
 @pytest.mark.asyncio
 async def test_tier_timestamps_reset_after_relogin(mock_entry):
-    """After a successful re-login, all tier timestamps are reset to 0
-    so every tier runs on the very next cycle."""
+    """After a successful re-login, tiers that did NOT run this cycle are
+    reset to 0 so they run unconditionally on the very next cycle.
+
+    The tier that triggered the auth error (realtime, here) is correctly
+    left at "now" — it already fetched fresh data on the successful retry,
+    so it does not need forcing on the next cycle. Only the *other* tiers,
+    which were skipped this cycle, get reset.
+    """
+    import time as _time
     from custom_components.sophos_firewall.sophos_client import SophosAuthError
 
     coord = make_coordinator(mock_entry, snmp_enabled=False)
-    # Simulate tiers that ran recently
-    coord._last_realtime  = 9999.0
-    coord._last_fast      = 9999.0
-    coord._last_operative = 9999.0
-    coord._last_static    = 9999.0
+
+    # realtime must be "due" (timestamp in the past) so _fetch_xml() actually
+    # calls get_interfaces() and the simulated SophosAuthError fires.
+    coord._last_realtime  = 0.0
+    # fast/operative/static are deliberately "just ran" (timestamp == now) —
+    # i.e. NOT due this cycle — to prove the reset changes them rather than
+    # them coincidentally already being 0 before the update.
+    before = _time.monotonic()
+    coord._last_fast      = before
+    coord._last_operative = before
+    coord._last_static    = before
     coord._once_done      = True
 
     # First call raises auth error; second call (re-login retry) succeeds
@@ -206,8 +219,11 @@ async def test_tier_timestamps_reset_after_relogin(mock_entry):
 
     await coord._async_update_data()
 
-    # All timestamps must be back to 0 so every tier fires next cycle
-    assert coord._last_realtime  == 0.0
+    # realtime ran successfully on the retry — correctly stamped with "now",
+    # not reset to 0 (it doesn't need forcing, it already has fresh data).
+    assert coord._last_realtime  > before
+    # fast/operative/static did NOT run this cycle — reset to 0 so they are
+    # unconditionally due on the next cycle, regardless of their interval.
     assert coord._last_fast      == 0.0
     assert coord._last_operative == 0.0
     assert coord._last_static    == 0.0

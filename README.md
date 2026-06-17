@@ -1,7 +1,7 @@
 # Sophos Firewall — Home Assistant Integration
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![Version](https://img.shields.io/badge/Version-1.0.0-green)](https://github.com/hacs/integration)
+[![Version](https://img.shields.io/badge/Version-1.0.1-green)](https://github.com/hacs/integration)
 [![HA Version](https://img.shields.io/badge/HA-2024.9%2B-blue)](https://www.home-assistant.io)
 [![Quality Scale](https://img.shields.io/badge/Quality_Scale-Silver-silver)](https://www.home-assistant.io/docs/quality_scale/)
 
@@ -228,6 +228,7 @@ action:
 
 | Version | Änderungen |
 |---|---|
+| **v1.0.1** | Bugfix (Issue von taracraft): SNMP-Connectivity-Test in Config-Flow und Options-Flow schlug *immer* mit "snmp_cannot_connect" fehl, unabhängig von echten Credentials/Erreichbarkeit — `preload()` wurde nie vor `test_connection()` aufgerufen, der resultierende `RuntimeError` wurde von `_get()`s pauschalem Exception-Handler verschluckt. Fix: `preload()` jetzt korrekt aufgerufen; `RuntimeError` aus `_get_client()` wird in `_get`/`_multiget`/`_walk` separat als `WARNING` geloggt statt mit normalen Timeouts auf `DEBUG` vermischt. Zusätzlich beim Testen entdeckt und behoben: `SophosUptimeSensor` zeigte falsche Minutenzahl bei Uptimes <24h (z.B. "3 h 205 min" statt "3 h 25 min"). Test-Suite erstmals vollständig mit pytest ausgeführt statt nur syntaxgeprüft — dabei zwei veraltete Test-Erwartungen korrigiert. |
 | **v1.0.0** | Quality Scale Gold vollständig: `exception-translations` (alle Exceptions mit `translation_key`/`translation_domain`), `strict-typing` (`SophosData` TypedDict, `DataUpdateCoordinator[SophosData]`). Vollständige Config-Flow-Tests: `test_config_flow.py` neu (user/snmp/write_access/polling/reauth/reconfigure inkl. aller Error-Paths). DHCP-Sensor-Tests auf ENUM-Pattern angepasst. |
 | **v0.10.0** | Bugfix: `async_step_reauth()` implementiert — HA zeigt jetzt UI-Dialog bei Auth-Fehlern statt `UnknownStep`-Crash. Tier-Timestamps werden nach Re-Login zurückgesetzt. SNMP-Fehler-Handling per-Tier (ein fehlgeschlagenes OID bricht nicht mehr alle anderen Tiers ab). Stale-Entity-Cleanup für Interfaces, FW-Rules, VPN-Tunnel, DHCP-Server und Switches. DHCP-Sensor lokalisierbar (`SensorDeviceClass.ENUM`, `lease_count`-Attribut). `CONF_SNMP_ENABLED`-Literal-Bug behoben. Neue Tests. |
 | **v0.9.0** | 5-Tier Coordinator: Realtime/Fast/Operative/Static/Once. Konfigurierbare Poll-Intervalle und Quellen per Options-Flow. SNMP-Semaphore-Concurrency. VM-Detection (SFVH). Sections-API im Config-Flow. Reconfigure-Flow. Quality Scale Silver. |

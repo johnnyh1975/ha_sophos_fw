@@ -438,6 +438,14 @@ class SophosFirewallConfigFlow(ConfigFlow, domain=DOMAIN):
             version=data.get(CONF_SNMP_VERSION, DEFAULT_SNMP_VERSION),
         )
         try:
+            # preload() must run before any get/walk call — it patches the
+            # puresnmp security-plugin loader (avoids blocking I/O) and
+            # creates the underlying puresnmp Client instance. Without it,
+            # _get_client() raises RuntimeError, which test_connection()
+            # silently turns into "unreachable" (see _get()'s broad except).
+            # That previously made the SNMP test fail unconditionally —
+            # reported in GitHub issue by taracraft (S2S/multi-firewall SNMP).
+            await client.preload()
             reachable = await client.test_connection()
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Unexpected error during SNMP connection test")

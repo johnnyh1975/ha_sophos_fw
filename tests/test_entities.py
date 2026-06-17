@@ -92,7 +92,9 @@ class TestUptimeSensor:
 class TestServicesSummarySensor:
     def test_counts_running(self, mock_coordinator):
         entity = SophosServicesSummarySensor(mock_coordinator)
-        assert entity.native_value == 8  # 8 running in MOCK_SNMP_SERVICES
+        # MOCK_SNMP_SERVICES has 19 services at code 3 (running) and
+        # 2 at code 1 (stopped: antispam, ha_svc) — 21 total.
+        assert entity.native_value == 19
 
     def test_unit_has_21(self, mock_coordinator):
         entity = SophosServicesSummarySensor(mock_coordinator)

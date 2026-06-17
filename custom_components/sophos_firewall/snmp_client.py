@@ -290,6 +290,13 @@ class SNMPClient:
         except asyncio.TimeoutError:
             _LOGGER.debug("SNMP get %s: timeout", oid_str)
             return None
+        except RuntimeError as exc:
+            # _get_client() raises RuntimeError only when preload() was never
+            # called — this is an implementation bug, not a transient network
+            # condition, so it gets its own WARNING instead of being silently
+            # downgraded to DEBUG alongside ordinary timeouts.
+            _LOGGER.warning("SNMP get %s: %s", oid_str, exc)
+            return None
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("SNMP get %s: %s", oid_str, exc)
             return None
@@ -312,6 +319,10 @@ class SNMPClient:
         except asyncio.TimeoutError:
             _LOGGER.debug("SNMP multiget timeout (%d OIDs)", len(oids))
             return {o: None for o in oids}
+        except RuntimeError as exc:
+            # See _get() — preload() was never called, an implementation bug.
+            _LOGGER.warning("SNMP multiget failed: %s", exc)
+            return {o: None for o in oids}
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("SNMP multiget failed: %s", exc)
             return {o: None for o in oids}
@@ -325,6 +336,9 @@ class SNMPClient:
                 result[str(varbind.oid)] = varbind.value
         except asyncio.TimeoutError:
             _LOGGER.debug("SNMP walk %s: timeout", base_oid)
+        except RuntimeError as exc:
+            # See _get() — preload() was never called, an implementation bug.
+            _LOGGER.warning("SNMP walk %s: %s", base_oid, exc)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("SNMP walk %s: %s", base_oid, exc)
         return result

@@ -143,6 +143,83 @@ async def test_connection_failure_on_exception():
     assert result is False
 
 
+# ── _get_client() guard against missing preload() ─────────────────────────────
+#
+# Regression coverage for the bug reported by taracraft: calling any fetch
+# method before preload() must raise RuntimeError from _get_client(), and
+# that RuntimeError must be logged at WARNING (not silently downgraded to
+# DEBUG alongside ordinary network timeouts) so the real cause is visible.
+
+def test_get_client_raises_runtime_error_without_preload():
+    """_get_client() raises RuntimeError when preload() was never called."""
+    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
+    assert client._client is None
+    with pytest.raises(RuntimeError, match="before preload"):
+        client._get_client()
+
+
+@pytest.mark.asyncio
+async def test_get_without_preload_returns_none_and_logs_warning(caplog):
+    """_get() on a non-preloaded client returns None (does not raise) but
+    must log at WARNING level, distinguishing it from ordinary timeouts."""
+    import logging
+    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
+
+    with caplog.at_level(logging.WARNING, logger="custom_components.sophos_firewall.snmp_client"):
+        result = await client._get("1.3.6.1.4.1.2604.5.1.3.3.0")
+
+    assert result is None
+    assert any(
+        "before preload" in record.message and record.levelno == logging.WARNING
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_multiget_without_preload_returns_none_dict_and_logs_warning(caplog):
+    """_multiget() on a non-preloaded client logs at WARNING, not DEBUG."""
+    import logging
+    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
+    oids = ["1.3.6.1.4.1.2604.5.1.3.3.0", "1.3.6.1.4.1.2604.5.1.3.4.0"]
+
+    with caplog.at_level(logging.WARNING, logger="custom_components.sophos_firewall.snmp_client"):
+        result = await client._multiget(oids)
+
+    assert result == {o: None for o in oids}
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_walk_without_preload_returns_empty_dict_and_logs_warning(caplog):
+    """_walk() on a non-preloaded client logs at WARNING, not DEBUG."""
+    import logging
+    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
+
+    with caplog.at_level(logging.WARNING, logger="custom_components.sophos_firewall.snmp_client"):
+        result = await client._walk("1.3.6.1.4.1.2604.5.1.3")
+
+    assert result == {}
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_get_ordinary_timeout_still_logs_at_debug_not_warning(caplog):
+    """A normal asyncio.TimeoutError (real network issue) stays at DEBUG —
+    only the preload() implementation bug is escalated to WARNING."""
+    import asyncio
+    import logging
+    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
+    client._client = MagicMock()
+    client._client.get = AsyncMock(side_effect=asyncio.TimeoutError())
+
+    with caplog.at_level(logging.DEBUG, logger="custom_components.sophos_firewall.snmp_client"):
+        result = await client._get("1.3.6.1.4.1.2604.5.1.3.3.0")
+
+    assert result is None
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings == []
+
+
 # ── get_device_info ───────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

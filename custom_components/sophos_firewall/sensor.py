@@ -560,10 +560,10 @@ class SophosUptimeSensor(SophosEntity, SensorEntity):
     @staticmethod
     def _format(seconds: int) -> str:
         days, rem = divmod(seconds, 86400)
-        hours = rem // 3600
+        hours, rem2 = divmod(rem, 3600)
         if days > 0:
             return f"{days} d {hours} h"
-        minutes = rem // 60
+        minutes = rem2 // 60
         return f"{hours} h {minutes} min"
 
     @property
