@@ -193,6 +193,14 @@ action:
 
 ---
 
+## Advanced Guides
+
+| Guide | Description |
+|---|---|
+| [Top-25 Blocked Connections Dashboard](docs/top25_blocked_connections.md) | Build a live "Top 25 blocked source IPs" card using Sophos syslog + HACS Syslog Receiver + pyscript — no changes to this integration required |
+
+---
+
 ## Kompatibilität
 
 | Gerät / Version | Status | Getestet mit |
