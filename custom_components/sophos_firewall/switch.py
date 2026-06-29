@@ -12,6 +12,7 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -21,9 +22,10 @@ from .const import (
     CONF_WRITE_ACCESS,
     DATA_FIREWALL_RULES,
     DATA_WEB_FILTER_POLICIES,
+    DOMAIN,
 )
 from .coordinator import SophosCoordinator
-from .entity import SophosEntity
+from .entity import SophosEntity, field_str
 from .sophos_client import SophosClient, SophosAPIError
 
 _LOGGER = logging.getLogger(__name__)
@@ -119,14 +121,30 @@ class SophosFirewallRuleSwitch(SophosEntity, SwitchEntity, RestoreEntity):
         self._rule_name = rule.get("Name", "unknown")
         super().__init__(coordinator, unique_suffix=f"switch_fwrule_{self._rule_name}")
         self._attr_translation_placeholders = {"name": self._rule_name}
+        self._restored_is_on: bool | None = None
+        self._optimistic: bool | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last known state on startup."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state in ("on", "off"):
+            self._restored_is_on = last_state.state == "on"
+
+    def _handle_coordinator_update(self) -> None:
+        """Clear the optimistic override once fresh data has arrived."""
+        self._optimistic = None
+        super()._handle_coordinator_update()
 
     @property
     def is_on(self) -> bool | None:
+        if self._optimistic is not None:
+            return self._optimistic
         if self.coordinator.data is None:
-            return None
+            return self._restored_is_on
         for rule in self.coordinator.data.get(DATA_FIREWALL_RULES, []):
             if rule.get("Name") == self._rule_name:
-                return rule.get("Status", "").lower() == "enable"
+                return field_str(rule, "Status").lower() == "enable"
         return None
 
     async def async_turn_on(self, **_: Any) -> None:
@@ -141,7 +159,18 @@ class SophosFirewallRuleSwitch(SophosEntity, SwitchEntity, RestoreEntity):
             await client.set_firewall_rule_status(self._rule_name, enable)
         except SophosAPIError as exc:
             _LOGGER.error("Failed to set firewall rule %r: %s", self._rule_name, exc)
-            return
+            # Write failed — force a refresh so the UI reverts to actual state
+            self.coordinator.force_operative_refresh()
+            await self.coordinator.async_request_refresh()
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="write_failed",
+            ) from exc
+        # Optimistic update: reflect the new state immediately rather than
+        # showing stale data until the refresh round-trip completes.
+        # _handle_coordinator_update() clears this once fresh data arrives.
+        self._optimistic = enable
+        self.async_write_ha_state()
         self.coordinator.force_operative_refresh()
         await self.coordinator.async_request_refresh()
 
@@ -166,14 +195,30 @@ class SophosWebFilterSwitch(SophosEntity, SwitchEntity, RestoreEntity):
             coordinator, unique_suffix=f"switch_webfilter_{self._policy_name}"
         )
         self._attr_translation_placeholders = {"name": self._policy_name}
+        self._restored_is_on: bool | None = None
+        self._optimistic: bool | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last known state on startup."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state in ("on", "off"):
+            self._restored_is_on = last_state.state == "on"
+
+    def _handle_coordinator_update(self) -> None:
+        """Clear the optimistic override once fresh data has arrived."""
+        self._optimistic = None
+        super()._handle_coordinator_update()
 
     @property
     def is_on(self) -> bool | None:
+        if self._optimistic is not None:
+            return self._optimistic
         if self.coordinator.data is None:
-            return None
+            return self._restored_is_on
         for policy in self.coordinator.data.get(DATA_WEB_FILTER_POLICIES, []):
             if policy.get("Name") == self._policy_name:
-                return policy.get("DefaultAction", "").lower() == "allow"
+                return field_str(policy, "DefaultAction").lower() == "allow"
         return None
 
     async def async_turn_on(self, **_: Any) -> None:
@@ -190,6 +235,13 @@ class SophosWebFilterSwitch(SophosEntity, SwitchEntity, RestoreEntity):
             _LOGGER.error(
                 "Failed to set web filter policy %r: %s", self._policy_name, exc
             )
-            return
+            self.coordinator.force_operative_refresh()
+            await self.coordinator.async_request_refresh()
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="write_failed",
+            ) from exc
+        self._optimistic = allow
+        self.async_write_ha_state()
         self.coordinator.force_operative_refresh()
         await self.coordinator.async_request_refresh()

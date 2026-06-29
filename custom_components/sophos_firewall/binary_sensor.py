@@ -31,10 +31,12 @@ from .const import (
     CONF_WRITE_ACCESS,
     DATA_INTERFACES,
     DATA_FIREWALL_RULES,
+    DATA_SNMP_HA,
+    DATA_SNMP_HEALTH,
     DATA_SNMP_TUNNELS,
 )
 from .coordinator import SophosCoordinator
-from .entity import SophosEntity
+from .entity import SophosEntity, field_str
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +57,10 @@ async def async_setup_entry(
     snmp_enabled: bool = entry.data.get(CONF_SNMP_ENABLED, False)
     write_access: bool = entry.data.get(CONF_WRITE_ACCESS, False)
     added_ids: set[str] = set()
+
+    # ── Static SNMP entities (always one per entry when SNMP is enabled) ───────
+    if snmp_enabled:
+        async_add_entities([SophosHAEnabledSensor(coordinator)])
 
     def _add_dynamic_entities() -> None:
         data = coordinator.data
@@ -131,6 +137,27 @@ async def async_setup_entry(
                         reg.async_remove(entity_id)
                     added_ids.discard(uid)
 
+            # ── PSU status sensors (physical appliances only) ──────────────────
+            # psus dict is empty on virtual appliances (SFVH) — no entities created.
+            health = data.get(DATA_SNMP_HEALTH, {})
+            current_psu_keys: set[str] = set(health.get("psus", {}).keys())
+            for psu_key in health.get("psus", {}):
+                uid = f"{entry.entry_id}_psu_{psu_key}"
+                if uid not in added_ids:
+                    added_ids.add(uid)
+                    new_entities.append(SophosPSUSensor(coordinator, psu_key))
+
+            # Remove stale PSU sensors
+            for uid in list(added_ids):
+                if not uid.startswith(f"{entry.entry_id}_psu_"):
+                    continue
+                psu_key = uid[len(f"{entry.entry_id}_psu_"):]
+                if psu_key not in current_psu_keys:
+                    entity_id = reg.async_get_entity_id("binary_sensor", "sophos_firewall", uid)
+                    if entity_id:
+                        reg.async_remove(entity_id)
+                    added_ids.discard(uid)
+
         if new_entities:
             _LOGGER.debug("Adding %d dynamic binary_sensor entities", len(new_entities))
             async_add_entities(new_entities)
@@ -148,7 +175,8 @@ async def async_setup_entry(
 class SophosInterfaceSensor(SophosEntity, BinarySensorEntity, RestoreEntity):
     """Binary sensor: network interface up/down.
 
-    RestoreEntity: zeigt letzten bekannten State sofort nach HA-Neustart.
+    RestoreEntity: shows the last known state immediately after an HA restart,
+    until the first coordinator fetch populates fresh data.
     """
 
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
@@ -159,14 +187,23 @@ class SophosInterfaceSensor(SophosEntity, BinarySensorEntity, RestoreEntity):
         self._iface_name = iface.get("Name", "unknown")
         super().__init__(coordinator, unique_suffix=f"iface_{self._iface_name}")
         self._attr_translation_placeholders = {"name": self._iface_name}
+        self._restored_is_on: bool | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last known state on startup."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state in ("on", "off"):
+            self._restored_is_on = last_state.state == "on"
 
     @property
     def is_on(self) -> bool | None:
         if self.coordinator.data is None:
-            return None
+            # No fresh data yet — fall back to restored state after restart
+            return self._restored_is_on
         for iface in self.coordinator.data.get(DATA_INTERFACES, []):
             if iface.get("Name") == self._iface_name:
-                return iface.get("InterfaceStatus", "").upper() == "ON"
+                return field_str(iface, "InterfaceStatus").upper() == "ON"
         return None
 
     @property
@@ -205,7 +242,7 @@ class SophosFirewallRuleSensor(SophosEntity, BinarySensorEntity):
             return None
         for rule in self.coordinator.data.get(DATA_FIREWALL_RULES, []):
             if rule.get("Name") == self._rule_name:
-                return rule.get("Status", "").lower() == "enable"
+                return field_str(rule, "Status").lower() == "enable"
         return None
 
     @property
@@ -226,7 +263,8 @@ class SophosFirewallRuleSensor(SophosEntity, BinarySensorEntity):
 class SophosVPNTunnelSensor(SophosEntity, BinarySensorEntity, RestoreEntity):
     """Binary sensor: IPSec VPN tunnel active/inactive (SNMP).
 
-    RestoreEntity: zeigt letzten bekannten State sofort nach HA-Neustart.
+    RestoreEntity: shows the last known state immediately after an HA restart,
+    until the first coordinator fetch populates fresh data.
     """
 
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
@@ -240,11 +278,19 @@ class SophosVPNTunnelSensor(SophosEntity, BinarySensorEntity, RestoreEntity):
         self._tunnel_idx  = tunnel.get("index", "0")
         super().__init__(coordinator, unique_suffix=f"vpn_{self._tunnel_idx}")
         self._attr_translation_placeholders = {"name": self._tunnel_name}
+        self._restored_is_on: bool | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last known state on startup."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state in ("on", "off"):
+            self._restored_is_on = last_state.state == "on"
 
     @property
     def is_on(self) -> bool | None:
         if self.coordinator.data is None:
-            return None
+            return self._restored_is_on
         for tunnel in self.coordinator.data.get(DATA_SNMP_TUNNELS, []):
             if tunnel.get("index") == self._tunnel_idx:
                 return tunnel.get("conn_status") == 1
@@ -261,3 +307,65 @@ class SophosVPNTunnelSensor(SophosEntity, BinarySensorEntity, RestoreEntity):
                     "activated":        tunnel.get("activated") == 1,
                 }
         return {}
+
+class SophosHAEnabledSensor(SophosEntity, BinarySensorEntity):
+    """Binary sensor: High Availability cluster active or not.
+
+    True  → HA is enabled and the cluster is operational.
+    False → HA is disabled (single-node standalone mode).
+    None  → SNMP data not yet available.
+    """
+
+    _attr_translation_key  = "ha_enabled"
+    _attr_icon             = "mdi:server-network"
+    _attr_device_class     = BinarySensorDeviceClass.RUNNING
+
+    def __init__(self, coordinator: SophosCoordinator) -> None:
+        super().__init__(coordinator, unique_suffix="ha_enabled")
+
+    @property
+    def is_on(self) -> bool | None:
+        if self.coordinator.data is None:
+            return None
+        ha = self.coordinator.data.get(DATA_SNMP_HA, {})
+        if not ha:
+            return None
+        return bool(ha.get("ha_enabled", False))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        ha = (self.coordinator.data or {}).get(DATA_SNMP_HA, {})
+        return {
+            "current_state_code": ha.get("current_state"),
+            "peer_state_code":    ha.get("peer_state"),
+        }
+
+
+class SophosPSUSensor(SophosEntity, BinarySensorEntity):
+    """Binary sensor for a single PSU (power supply unit).
+
+    True  → PSU present and operational.
+    False → PSU absent or failed.
+
+    Only created on physical appliances — the psus dict is empty on SFVH
+    virtual appliances, so no entities are registered for VMs.
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.POWER
+
+    def __init__(self, coordinator: SophosCoordinator, psu_key: str) -> None:
+        super().__init__(coordinator, unique_suffix=f"psu_{psu_key}")
+        self._psu_key = psu_key
+        self._attr_translation_key = "psu_status"
+        self._attr_translation_placeholders = {"psu": psu_key.replace("_", " ")}
+
+    @property
+    def is_on(self) -> bool | None:
+        if self.coordinator.data is None:
+            return None
+        return (
+            self.coordinator.data
+            .get(DATA_SNMP_HEALTH, {})
+            .get("psus", {})
+            .get(self._psu_key)
+        )

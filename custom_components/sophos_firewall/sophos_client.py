@@ -51,7 +51,14 @@ _MAX_CONNECTIONS = 2
 
 
 class SophosAuthError(Exception):
-    """Raised when the firewall rejects credentials (status code 535)."""
+    """Raised when the firewall rejects credentials or denies API access.
+
+    Triggered by:
+    - Login/status text containing "fail"/"invalid" (wrong credentials)
+    - HTTP 403 (API access permission denied)
+    - Response-level Status code 532 (API not enabled), 534 (IP not in
+      API access list), or 535 (authentication/authorization failure)
+    """
 
 
 class SophosAPIError(Exception):
@@ -132,12 +139,21 @@ class SophosClient:
         )
 
     async def close(self) -> None:
-        """Close the session and underlying connector, releasing all sockets."""
+        """Close the session and underlying connector, releasing all sockets.
+
+        Tolerant of errors during close — a failure here must never prevent
+        the config entry from unloading cleanly. The session reference is
+        cleared regardless so a subsequent open() starts fresh.
+        """
         if self._session is not None:
-            await self._session.close()
-            self._session = None
-            self._connector = None
-            _LOGGER.debug("SophosClient session closed for %s", self._host)
+            try:
+                await self._session.close()
+            except Exception as exc:  # noqa: BLE001 — close failures are non-fatal
+                _LOGGER.debug("Error closing SophosClient session for %s: %s", self._host, exc)
+            finally:
+                self._session = None
+                self._connector = None
+                _LOGGER.debug("SophosClient session closed for %s", self._host)
 
     async def __aenter__(self) -> "SophosClient":
         await self.open()
@@ -216,6 +232,28 @@ class SophosClient:
             if "fail" in status_text or "invalid" in status_text:
                 raise SophosAuthError(f"Authentication failed: {login_el.text}")
 
+        # Check response-level Status element. Sophos reports certain request
+        # rejections here (not in Login/status):
+        #   532 = API access not enabled on the firewall
+        #   534 = client IP not in the API Access List
+        #   535 = authentication/authorization failure
+        # These otherwise slip through as an empty/zero-record response.
+        status_el = root.find("Status")
+        if status_el is not None:
+            code = status_el.get("code", "")
+            if code in ("532", "534", "535"):
+                # 535 is auth-class; 532/534 are access-policy errors. Both
+                # mean the request will never succeed until the admin fixes
+                # firewall config, so surface them as auth errors to trigger
+                # the reauth/repair path rather than silent empty data.
+                raise SophosAuthError(
+                    f"API access denied (code {code}): {status_el.text or ''}".strip()
+                )
+            if code and code not in ("200", "201"):
+                raise SophosAPIError(
+                    f"API request failed (code {code}): {status_el.text or ''}".strip()
+                )
+
         return root
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -249,13 +287,19 @@ class SophosClient:
 
         records: list[dict[str, Any]] = []
         for elem in root.iter(tag):
-            # Skip status-only elements (e.g. <Interface><Status code="529"/></Interface>)
+            # Skip status-only elements (e.g. <Interface><Status code="529"/></Interface>).
+            # A status code other than success on an individual element means
+            # that one record is unavailable — skip just that element rather
+            # than discarding every record fetched in the same response.
             status_el = elem.find("Status")
             if status_el is not None and status_el.get("code"):
                 code = status_el.get("code", "")
                 if code not in ("200", "201", ""):
-                    _LOGGER.debug("Tag %s returned status %s — skipping", tag, code)
-                    return []
+                    _LOGGER.debug(
+                        "Tag %s element returned status %s — skipping this record",
+                        tag, code,
+                    )
+                    continue
             d = self._elem_to_dict(elem)
             if d:
                 records.append(d)
@@ -410,6 +454,17 @@ class SophosClient:
             f"</Set>"
             f"</Request>"
         )
-        await self._post(xml)
+        root = await self._post(xml)
+        # _post() already raises on response-level Status errors (532/534/535
+        # and other non-2xx codes). Additionally check the BackupRestore-specific
+        # status so a rejected backup (e.g. BackupMode=Mail with no mail server
+        # configured) surfaces as an error instead of a silent success.
+        status_el = root.find("BackupRestore/Status")
+        if status_el is not None:
+            code = status_el.get("code", "200")
+            if code not in ("200", "201", ""):
+                raise SophosAPIError(
+                    f"trigger_backup failed (code {code}): {status_el.text or ''}".strip()
+                )
         _LOGGER.info("Sophos Firewall backup triggered (mode=%s, frequency=%s)", mode, frequency)
 

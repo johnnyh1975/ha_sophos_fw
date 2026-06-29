@@ -93,6 +93,8 @@ MOCK_SNMP_STATS = {
     "http_hits":          21355078,
     "ftp_hits":           0,
     "smtp_hits":          19,
+    "imap_hits":          47,
+    "pop3_hits":          12,
     "live_users":         1,
     "current_date":       "Thu May 15 17:00:00 2026",
 }

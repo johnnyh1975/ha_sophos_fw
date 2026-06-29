@@ -235,3 +235,135 @@ def test_elem_to_dict_single_child():
     result = SophosClient._elem_to_dict(xml)
     assert result["Name"] == "PortA"
     assert not isinstance(result["Name"], list)
+
+
+# ── Response-level Status codes (532/534/535) — regression for code review ────
+
+@pytest.mark.asyncio
+async def test_post_status_532_api_not_enabled_raises_auth():
+    """Response-level Status code 532 (API not enabled) → SophosAuthError."""
+    xml_response = """<?xml version="1.0"?>
+    <Response APIVersion="2200.1">
+      <Status code="532">API access not enabled</Status>
+    </Response>"""
+    with aioresponses() as m:
+        m.post(URL, body=xml_response, content_type="text/xml")
+        async with make_client() as client:
+            with pytest.raises(SophosAuthError):
+                await client.test_connection()
+
+
+@pytest.mark.asyncio
+async def test_post_status_534_ip_blocked_raises_auth():
+    """Response-level Status code 534 (IP not in access list) → SophosAuthError."""
+    xml_response = """<?xml version="1.0"?>
+    <Response APIVersion="2200.1">
+      <Status code="534">IP address not allowed</Status>
+    </Response>"""
+    with aioresponses() as m:
+        m.post(URL, body=xml_response, content_type="text/xml")
+        async with make_client() as client:
+            with pytest.raises(SophosAuthError):
+                await client.test_connection()
+
+
+@pytest.mark.asyncio
+async def test_post_status_other_error_raises_api_error():
+    """A non-2xx response-level Status code → SophosAPIError (not auth)."""
+    xml_response = """<?xml version="1.0"?>
+    <Response APIVersion="2200.1">
+      <Status code="500">Internal error</Status>
+    </Response>"""
+    with aioresponses() as m:
+        m.post(URL, body=xml_response, content_type="text/xml")
+        async with make_client() as client:
+            with pytest.raises(SophosAPIError):
+                await client.test_connection()
+
+
+@pytest.mark.asyncio
+async def test_post_nested_status_not_treated_as_error():
+    """A <Status> nested inside a record element must NOT trigger the
+    response-level check — only direct children of <Response> count."""
+    xml_response = """<?xml version="1.0"?>
+    <Response APIVersion="2200.1">
+      <Login><status>Authentication Successful</status></Login>
+      <Interface><Name>PortA</Name><Status code="200"/></Interface>
+    </Response>"""
+    with aioresponses() as m:
+        m.post(URL, body=xml_response, content_type="text/xml")
+        async with make_client() as client:
+            result = await client.get_interfaces()
+    assert len(result) == 1
+    assert result[0]["Name"] == "PortA"
+
+
+# ── trigger_backup status check — regression for code review B2 ───────────────
+
+@pytest.mark.asyncio
+async def test_trigger_backup_success():
+    """trigger_backup completes silently when the firewall accepts it."""
+    # First call: get_backup() reads current config
+    get_response = """<?xml version="1.0"?>
+    <Response APIVersion="2200.1">
+      <Login><status>Authentication Successful</status></Login>
+      <BackupRestore><ScheduleBackup><BackupMode>Local</BackupMode>
+      <BackupFrequency>Daily</BackupFrequency></ScheduleBackup></BackupRestore>
+    </Response>"""
+    # Second call: the write-back
+    set_response = """<?xml version="1.0"?>
+    <Response APIVersion="2200.1">
+      <Login><status>Authentication Successful</status></Login>
+      <BackupRestore><Status code="200">Configuration applied successfully</Status></BackupRestore>
+    </Response>"""
+    with aioresponses() as m:
+        m.post(URL, body=get_response, content_type="text/xml")
+        m.post(URL, body=set_response, content_type="text/xml")
+        async with make_client() as client:
+            await client.trigger_backup()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_trigger_backup_failure_raises():
+    """trigger_backup raises when the firewall rejects the backup (no longer
+    silently swallowed) — regression for code review finding B2."""
+    get_response = """<?xml version="1.0"?>
+    <Response APIVersion="2200.1">
+      <Login><status>Authentication Successful</status></Login>
+      <BackupRestore><ScheduleBackup><BackupMode>Mail</BackupMode>
+      <BackupFrequency>Daily</BackupFrequency></ScheduleBackup></BackupRestore>
+    </Response>"""
+    set_response = """<?xml version="1.0"?>
+    <Response APIVersion="2200.1">
+      <Login><status>Authentication Successful</status></Login>
+      <BackupRestore><Status code="502">Mail server not configured</Status></BackupRestore>
+    </Response>"""
+    with aioresponses() as m:
+        m.post(URL, body=get_response, content_type="text/xml")
+        m.post(URL, body=set_response, content_type="text/xml")
+        async with make_client() as client:
+            with pytest.raises(SophosAPIError):
+                await client.trigger_backup()
+
+
+# ── _get_tag element-skip vs list-discard — regression for code review V4 ─────
+
+@pytest.mark.asyncio
+async def test_get_tag_skips_individual_error_element():
+    """One element with an error status is skipped; valid siblings are kept
+    (previously the whole list was discarded) — regression for V4."""
+    xml_response = """<?xml version="1.0"?>
+    <Response APIVersion="2200.1">
+      <Login><status>Authentication Successful</status></Login>
+      <Interface><Name>PortA</Name><InterfaceStatus>ON</InterfaceStatus></Interface>
+      <Interface><Status code="526"/></Interface>
+      <Interface><Name>PortC</Name><InterfaceStatus>ON</InterfaceStatus></Interface>
+    </Response>"""
+    with aioresponses() as m:
+        m.post(URL, body=xml_response, content_type="text/xml")
+        async with make_client() as client:
+            result = await client.get_interfaces()
+    # Two valid interfaces kept, the error element skipped — not an empty list
+    names = {i.get("Name") for i in result}
+    assert "PortA" in names
+    assert "PortC" in names

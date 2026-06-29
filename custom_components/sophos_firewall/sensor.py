@@ -32,6 +32,7 @@ from .const import (
     DATA_BACKUP,
     DATA_DHCP_SERVERS,
     DATA_SNMP_DEVICE,
+    DATA_SNMP_HA,
     DATA_SNMP_HEALTH,
     DATA_SNMP_LICENSES,
     DATA_SNMP_SERVICES,
@@ -45,7 +46,7 @@ from .const import (
     SERVICE_RUNNING_STATE,
 )
 from .coordinator import SophosCoordinator
-from .entity import SophosEntity
+from .entity import SophosEntity, field_str
 
 PARALLEL_UPDATES = 0
 
@@ -128,6 +129,22 @@ SENSOR_DESCRIPTIONS: tuple[SophosSensorDescription, ...] = (
         requires_snmp=True,
     ),
     SophosSensorDescription(
+        key="imap_hits",
+        translation_key="imap_hits",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        icon="mdi:email-receive-outline",
+        value_fn=_stats("imap_hits"),
+        requires_snmp=True,
+    ),
+    SophosSensorDescription(
+        key="pop3_hits",
+        translation_key="pop3_hits",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        icon="mdi:email-receive-outline",
+        value_fn=_stats("pop3_hits"),
+        requires_snmp=True,
+    ),
+    SophosSensorDescription(
         key="live_users",
         translation_key="live_users",
         state_class=SensorStateClass.MEASUREMENT,
@@ -169,7 +186,7 @@ SENSOR_DESCRIPTIONS: tuple[SophosSensorDescription, ...] = (
             (
                 p.get("DefaultAction")
                 for p in (d.get(DATA_WEB_FILTER_POLICIES) or [])
-                if "default" in p.get("Name", "").lower()
+                if "default" in field_str(p, "Name").lower()
             ),
             (d.get(DATA_WEB_FILTER_POLICIES) or [{}])[0].get("DefaultAction"),
         ),
@@ -234,6 +251,8 @@ async def async_setup_entry(
         static_entities.append(SophosServicesSummarySensor(coordinator))
         static_entities.append(SophosLicensesSummarySensor(coordinator))
         static_entities.append(SophosUptimeSensor(coordinator))
+        static_entities.append(SophosHAStateSensor(coordinator))
+        static_entities.append(SophosHAPeerStateSensor(coordinator))
     async_add_entities(static_entities)
 
     # ── Phase 2: Dynamic sensors via coordinator listener ─────────────────────
@@ -362,7 +381,7 @@ class SophosDHCPLeaseSensor(SophosEntity, SensorEntity):
         server = self._get_server()
         leases = self._get_leases()
         normalised = [
-            {**lease, "MACAddress": lease.get("MACAddress", "").lower()}
+            {**lease, "MACAddress": field_str(lease, "MACAddress").lower()}
             for lease in leases
         ]
         return {
@@ -582,3 +601,73 @@ class SophosUptimeSensor(SophosEntity, SensorEntity):
         seconds = self.coordinator.data.get(DATA_SNMP_STATS, {}).get("uptime_seconds")
         return {"uptime_seconds": seconds}
 
+
+# ── HA state labels ───────────────────────────────────────────────────────────
+# sfosXGHAStats HaState enum (OID .4.4.0 / .4.5.0)
+_HA_STATE_MAP: dict[int, str] = {
+    0: "not_applicable",
+    1: "auxiliary",
+    2: "standalone",
+    3: "primary",
+    4: "faulty",
+    5: "ready",
+}
+
+
+class SophosHAStateSensor(SophosEntity, SensorEntity):
+    """Sensor: this node's role in the HA cluster.
+
+    native_value is a machine-readable string from _HA_STATE_MAP that HA
+    can translate via device_class ENUM + translation keys.
+    The numeric OID code is exposed as an attribute for automations.
+    """
+
+    _attr_translation_key = "ha_current_state"
+    _attr_icon            = "mdi:server-network"
+    _attr_device_class    = SensorDeviceClass.ENUM
+    _attr_options         = list(_HA_STATE_MAP.values())
+
+    def __init__(self, coordinator: SophosCoordinator) -> None:
+        super().__init__(coordinator, unique_suffix="ha_current_state")
+
+    @property
+    def native_value(self) -> str | None:
+        if self.coordinator.data is None:
+            return None
+        ha = self.coordinator.data.get(DATA_SNMP_HA, {})
+        if not ha:
+            return None
+        code = ha.get("current_state")
+        return _HA_STATE_MAP.get(code) if code is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        ha = (self.coordinator.data or {}).get(DATA_SNMP_HA, {})
+        return {"state_code": ha.get("current_state")}
+
+
+class SophosHAPeerStateSensor(SophosEntity, SensorEntity):
+    """Sensor: the peer node's role in the HA cluster."""
+
+    _attr_translation_key = "ha_peer_state"
+    _attr_icon            = "mdi:server-network-outline"
+    _attr_device_class    = SensorDeviceClass.ENUM
+    _attr_options         = list(_HA_STATE_MAP.values())
+
+    def __init__(self, coordinator: SophosCoordinator) -> None:
+        super().__init__(coordinator, unique_suffix="ha_peer_state")
+
+    @property
+    def native_value(self) -> str | None:
+        if self.coordinator.data is None:
+            return None
+        ha = self.coordinator.data.get(DATA_SNMP_HA, {})
+        if not ha:
+            return None
+        code = ha.get("peer_state")
+        return _HA_STATE_MAP.get(code) if code is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        ha = (self.coordinator.data or {}).get(DATA_SNMP_HA, {})
+        return {"state_code": ha.get("peer_state")}

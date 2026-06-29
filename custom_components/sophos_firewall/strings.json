@@ -163,74 +163,35 @@
   },
   "entity": {
     "binary_sensor": {
-      "interface_status": {
-        "name": "Netz · Interface {name}"
+      "ha_enabled": {
+        "name": "Hochverfügbarkeit · Status"
       },
-      "firewall_rule_status": {
-        "name": "Rule {name}"
-      },
-      "vpn_tunnel_status": {
-        "name": "VPN {name}"
+      "psu_status": {
+        "name": "System · Netzteil {psu}"
       }
     },
     "sensor": {
-      "services_summary": {
-        "name": "System · Dienste"
-      },
-      "licenses_summary": {
-        "name": "Sicherheit · Lizenzen"
-      },
-      "memory_percent": {
-        "name": "System · RAM-Auslastung"
-      },
-      "disk_percent": {
-        "name": "System · Disk-Auslastung"
-      },
-      "swap_percent": {
-        "name": "System · Swap-Auslastung"
-      },
-      "uptime": {
-        "name": "System · Uptime"
-      },
-      "http_hits": {
-        "name": "Netz · HTTP-Verbindungen"
-      },
-      "smtp_hits": {
-        "name": "Netz · SMTP-Verbindungen"
-      },
-      "live_users": {
-        "name": "Netz · Aktive Captive-Portal-User"
-      },
-      "cpu_temperature": {
-        "name": "System · CPU-Temperatur"
-      },
-      "npu_temperature": {
-        "name": "System · NPU-Temperatur"
-      },
-      "fan_speed": {
-        "name": "System · Lüfter {fan}"
-      },
-      "dhcp_leases": {
-        "name": "Netz · DHCP-Leases {server}",
+      "ha_current_state": {
+        "name": "Hochverfügbarkeit · Rolle (dieser Knoten)",
         "state": {
-          "off": "Außer Betrieb",
-          "on": "In Betrieb"
+          "not_applicable": "Nicht zutreffend",
+          "auxiliary": "Sekundär",
+          "standalone": "Einzelbetrieb",
+          "primary": "Primär",
+          "faulty": "Fehler",
+          "ready": "Bereit"
         }
       },
-      "web_filter_default_action": {
-        "name": "Sicherheit · Web-Filter Standardaktion"
-      },
-      "backup_frequency": {
-        "name": "System · Backup-Häufigkeit"
-      },
-      "ftp_hits": {
-        "name": "Netz · FTP-Verbindungen"
-      },
-      "ips_version": {
-        "name": "Sicherheit · IPS-Signaturversion"
-      },
-      "webcat_version": {
-        "name": "Sicherheit · Webcat-Version"
+      "ha_peer_state": {
+        "name": "Hochverfügbarkeit · Rolle (Peer)",
+        "state": {
+          "not_applicable": "Nicht zutreffend",
+          "auxiliary": "Sekundär",
+          "standalone": "Einzelbetrieb",
+          "primary": "Primär",
+          "faulty": "Fehler",
+          "ready": "Bereit"
+        }
       }
     },
     "switch": {
@@ -259,6 +220,12 @@
     },
     "xml_api_error": {
       "message": "XML-API-Fehler beim Datenabruf — nächster Versuch beim nächsten Polling-Zyklus."
+    },
+    "backup_failed": {
+      "message": "Backup konnte nicht ausgelöst werden — Backup-Konfiguration der Firewall prüfen (z.B. Mail-Server bei E-Mail-Backups)."
+    },
+    "write_failed": {
+      "message": "Die Firewall hat die Änderung abgelehnt — möglicherweise fehlt Schreibzugriff oder die Regel/Richtlinie existiert nicht mehr."
     }
   }
 }

@@ -163,74 +163,35 @@
   },
   "entity": {
     "binary_sensor": {
-      "interface_status": {
-        "name": "Interface {name}"
+      "ha_enabled": {
+        "name": "High availability · Status"
       },
-      "firewall_rule_status": {
-        "name": "Rule {name}"
-      },
-      "vpn_tunnel_status": {
-        "name": "VPN {name}"
+      "psu_status": {
+        "name": "System · PSU {psu}"
       }
     },
     "sensor": {
-      "services_summary": {
-        "name": "Services"
-      },
-      "licenses_summary": {
-        "name": "Licenses"
-      },
-      "memory_percent": {
-        "name": "RAM usage"
-      },
-      "disk_percent": {
-        "name": "Disk usage"
-      },
-      "swap_percent": {
-        "name": "Swap usage"
-      },
-      "uptime": {
-        "name": "Uptime"
-      },
-      "http_hits": {
-        "name": "HTTP connections"
-      },
-      "smtp_hits": {
-        "name": "SMTP connections"
-      },
-      "live_users": {
-        "name": "Active captive portal users"
-      },
-      "cpu_temperature": {
-        "name": "CPU temperature"
-      },
-      "npu_temperature": {
-        "name": "NPU temperature"
-      },
-      "fan_speed": {
-        "name": "Fan {fan}"
-      },
-      "dhcp_leases": {
-        "name": "DHCP leases {server}",
+      "ha_current_state": {
+        "name": "High availability · Role (this node)",
         "state": {
-          "off": "Inactive",
-          "on": "Active"
+          "not_applicable": "Not applicable",
+          "auxiliary": "Auxiliary",
+          "standalone": "Standalone",
+          "primary": "Primary",
+          "faulty": "Faulty",
+          "ready": "Ready"
         }
       },
-      "web_filter_default_action": {
-        "name": "Web filter default action"
-      },
-      "backup_frequency": {
-        "name": "Backup frequency"
-      },
-      "ftp_hits": {
-        "name": "FTP connections"
-      },
-      "ips_version": {
-        "name": "IPS signature version"
-      },
-      "webcat_version": {
-        "name": "Web category version"
+      "ha_peer_state": {
+        "name": "High availability · Role (peer)",
+        "state": {
+          "not_applicable": "Not applicable",
+          "auxiliary": "Auxiliary",
+          "standalone": "Standalone",
+          "primary": "Primary",
+          "faulty": "Faulty",
+          "ready": "Ready"
+        }
       }
     },
     "switch": {
@@ -259,6 +220,12 @@
     },
     "xml_api_error": {
       "message": "XML API error during data fetch — will retry on next polling cycle."
+    },
+    "backup_failed": {
+      "message": "Failed to trigger backup — check the firewall's backup configuration (e.g. mail server for email backups)."
+    },
+    "write_failed": {
+      "message": "The firewall rejected the change — it may require write access or the rule/policy no longer exists."
     }
   }
 }

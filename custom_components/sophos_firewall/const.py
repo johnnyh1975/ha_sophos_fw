@@ -235,6 +235,13 @@ OID_VPN_TABLE_STATUS   = f"{_VPN_TABLE}.9"   # connection status
 OID_VPN_TABLE_ACTIVATED= f"{_VPN_TABLE}.10"  # activation status
 OID_VPN_WALK_BASE      = f"{_BASE}.6.1.2.1"  # walk from here for tunnel table
 
+# VPN table column indices (the second-to-last OID component identifies the
+# column when walking the tunnel table). Named here so get_vpn_tunnels()
+# doesn't rely on bare string literals.
+VPN_COL_NAME      = "2"
+VPN_COL_STATUS    = "9"
+VPN_COL_ACTIVATED = "10"
+
 # sfosXGSystemHealth (.9.x)
 OID_NPU_TEMPERATURE    = f"{_BASE}.9.1.0"    # tenths of °C
 OID_CPU_TEMPERATURE    = f"{_BASE}.9.2.0"    # tenths of °C

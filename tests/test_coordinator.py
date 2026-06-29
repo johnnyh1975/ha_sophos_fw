@@ -276,3 +276,38 @@ async def test_async_close_calls_xml_client(mock_entry):
     coord = make_coordinator(mock_entry, snmp_enabled=False)
     await coord.async_close()
     coord.xml_client.close.assert_awaited_once()
+
+
+# ── Hardening: interval clamping prevents busy-loop ───────────────────────────
+
+def test_zero_realtime_interval_is_clamped(mock_entry):
+    """A zero realtime interval must be clamped to the default, otherwise
+    update_interval=timedelta(0) busy-loops and hammers the firewall."""
+    from custom_components.sophos_firewall.const import DEFAULT_INTERVAL_REALTIME
+    mock_entry.options = {"interval_realtime": 0}
+    coord = make_coordinator(mock_entry, snmp_enabled=False)
+    assert coord._iv_realtime == DEFAULT_INTERVAL_REALTIME
+    assert coord.update_interval.total_seconds() >= 5
+
+
+def test_negative_realtime_interval_is_clamped(mock_entry):
+    """A negative realtime interval is clamped to the default."""
+    from custom_components.sophos_firewall.const import DEFAULT_INTERVAL_REALTIME
+    mock_entry.options = {"interval_realtime": -10}
+    coord = make_coordinator(mock_entry, snmp_enabled=False)
+    assert coord._iv_realtime == DEFAULT_INTERVAL_REALTIME
+
+
+def test_non_int_realtime_interval_is_clamped(mock_entry):
+    """A non-integer realtime interval (corrupt storage) is clamped."""
+    from custom_components.sophos_firewall.const import DEFAULT_INTERVAL_REALTIME
+    mock_entry.options = {"interval_realtime": "not a number"}
+    coord = make_coordinator(mock_entry, snmp_enabled=False)
+    assert coord._iv_realtime == DEFAULT_INTERVAL_REALTIME
+
+
+def test_valid_realtime_interval_is_preserved(mock_entry):
+    """A valid realtime interval is used unchanged."""
+    mock_entry.options = {"interval_realtime": 45}
+    coord = make_coordinator(mock_entry, snmp_enabled=False)
+    assert coord._iv_realtime == 45

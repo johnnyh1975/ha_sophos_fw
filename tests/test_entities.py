@@ -12,9 +12,11 @@ import pytest
 from custom_components.sophos_firewall.sensor import (
     SophosSensor, SophosServicesSummarySensor, SophosLicensesSummarySensor,
     SophosDHCPLeaseSensor, SophosUptimeSensor, SENSOR_DESCRIPTIONS,
+    SophosHAStateSensor, SophosHAPeerStateSensor,
 )
 from custom_components.sophos_firewall.binary_sensor import (
     SophosInterfaceSensor, SophosFirewallRuleSensor, SophosVPNTunnelSensor,
+    SophosHAEnabledSensor, SophosPSUSensor,
 )
 from custom_components.sophos_firewall.switch import (
     SophosFirewallRuleSwitch, SophosWebFilterSwitch,
@@ -36,6 +38,14 @@ class TestSensors:
     def test_ftp_hits(self, mock_coordinator):
         desc = next(d for d in SENSOR_DESCRIPTIONS if d.key == "ftp_hits")
         assert SophosSensor(mock_coordinator, desc).native_value == 0
+
+    def test_imap_hits(self, mock_coordinator):
+        desc = next(d for d in SENSOR_DESCRIPTIONS if d.key == "imap_hits")
+        assert SophosSensor(mock_coordinator, desc).native_value == 47
+
+    def test_pop3_hits(self, mock_coordinator):
+        desc = next(d for d in SENSOR_DESCRIPTIONS if d.key == "pop3_hits")
+        assert SophosSensor(mock_coordinator, desc).native_value == 12
 
     def test_web_filter_finds_default_policy_by_name(self, mock_coordinator):
         mock_coordinator.data["web_filter_policies"] = [
@@ -265,20 +275,30 @@ class TestFirewallRuleSwitch:
     async def test_turn_off_calls_force_refresh(self, mock_coordinator):
         mock_coordinator.force_operative_refresh = MagicMock()
         entity = SophosFirewallRuleSwitch(mock_coordinator, {"Name": "Allow LAN to IoT"})
+        entity.async_write_ha_state = MagicMock()  # entity not added to hass in test
         await entity.async_turn_off()
         mock_coordinator.xml_client.set_firewall_rule_status.assert_awaited_once_with("Allow LAN to IoT", False)
         mock_coordinator.force_operative_refresh.assert_called_once()
         mock_coordinator.async_request_refresh.assert_awaited_once()
+        # Optimistic state reflects the change immediately
+        assert entity._optimistic is False
 
     @pytest.mark.asyncio
-    async def test_api_error_skips_refresh(self, mock_coordinator):
+    async def test_api_error_raises_and_reverts(self, mock_coordinator):
         from custom_components.sophos_firewall.sophos_client import SophosAPIError
+        from homeassistant.exceptions import HomeAssistantError
         mock_coordinator.force_operative_refresh = MagicMock()
         mock_coordinator.xml_client.set_firewall_rule_status.side_effect = SophosAPIError("fail")
         entity = SophosFirewallRuleSwitch(mock_coordinator, {"Name": "Allow LAN to IoT"})
-        await entity.async_turn_off()
-        mock_coordinator.force_operative_refresh.assert_not_called()
-        mock_coordinator.async_request_refresh.assert_not_awaited()
+        # On failure the switch raises (surfaces error to user) and forces a
+        # refresh so the UI reverts to the real state — it no longer silently
+        # swallows the error.
+        with pytest.raises(HomeAssistantError):
+            await entity.async_turn_off()
+        mock_coordinator.force_operative_refresh.assert_called_once()
+        mock_coordinator.async_request_refresh.assert_awaited_once()
+        # No optimistic state was set since the write failed
+        assert entity._optimistic is None
 
 
 # ── Switch: Web Filter ────────────────────────────────────────────────────────
@@ -297,6 +317,174 @@ class TestWebFilterSwitch:
     async def test_turn_off_calls_force_refresh(self, mock_coordinator):
         mock_coordinator.force_operative_refresh = MagicMock()
         entity = SophosWebFilterSwitch(mock_coordinator, {"Name": "DefaultPolicy"})
+        entity.async_write_ha_state = MagicMock()  # entity not added to hass in test
         await entity.async_turn_off()
         mock_coordinator.xml_client.set_web_filter_default_action.assert_awaited_once_with("DefaultPolicy", False)
         mock_coordinator.force_operative_refresh.assert_called_once()
+
+
+# ── HA Cluster Entities ───────────────────────────────────────────────────────
+
+MOCK_HA_ENABLED  = {"ha_enabled": True,  "current_state": 3, "peer_state": 1}
+MOCK_HA_DISABLED = {"ha_enabled": False, "current_state": 2, "peer_state": 0}
+
+
+class TestHAEnabledSensor:
+    def test_is_on_when_ha_enabled(self, mock_coordinator):
+        mock_coordinator.data["snmp_ha"] = MOCK_HA_ENABLED
+        assert SophosHAEnabledSensor(mock_coordinator).is_on is True
+
+    def test_is_off_when_ha_disabled(self, mock_coordinator):
+        mock_coordinator.data["snmp_ha"] = MOCK_HA_DISABLED
+        assert SophosHAEnabledSensor(mock_coordinator).is_on is False
+
+    def test_none_when_no_data(self, mock_coordinator):
+        mock_coordinator.data = None
+        assert SophosHAEnabledSensor(mock_coordinator).is_on is None
+
+    def test_none_when_ha_dict_empty(self, mock_coordinator):
+        mock_coordinator.data["snmp_ha"] = {}
+        assert SophosHAEnabledSensor(mock_coordinator).is_on is None
+
+    def test_attributes_contain_state_codes(self, mock_coordinator):
+        mock_coordinator.data["snmp_ha"] = MOCK_HA_ENABLED
+        attrs = SophosHAEnabledSensor(mock_coordinator).extra_state_attributes
+        assert attrs["current_state_code"] == 3
+        assert attrs["peer_state_code"] == 1
+
+
+class TestHAStateSensor:
+    def test_primary_state(self, mock_coordinator):
+        mock_coordinator.data["snmp_ha"] = MOCK_HA_ENABLED
+        assert SophosHAStateSensor(mock_coordinator).native_value == "primary"
+
+    def test_standalone_state(self, mock_coordinator):
+        mock_coordinator.data["snmp_ha"] = MOCK_HA_DISABLED
+        assert SophosHAStateSensor(mock_coordinator).native_value == "standalone"
+
+    def test_all_states_map_correctly(self, mock_coordinator):
+        expected = {0: "not_applicable", 1: "auxiliary", 2: "standalone",
+                    3: "primary", 4: "faulty", 5: "ready"}
+        for code, label in expected.items():
+            mock_coordinator.data["snmp_ha"] = {"ha_enabled": True, "current_state": code, "peer_state": 0}
+            assert SophosHAStateSensor(mock_coordinator).native_value == label
+
+    def test_none_when_no_data(self, mock_coordinator):
+        mock_coordinator.data = None
+        assert SophosHAStateSensor(mock_coordinator).native_value is None
+
+    def test_attribute_contains_raw_code(self, mock_coordinator):
+        mock_coordinator.data["snmp_ha"] = MOCK_HA_ENABLED
+        assert SophosHAStateSensor(mock_coordinator).extra_state_attributes["state_code"] == 3
+
+
+class TestHAPeerStateSensor:
+    def test_auxiliary_peer(self, mock_coordinator):
+        mock_coordinator.data["snmp_ha"] = MOCK_HA_ENABLED
+        assert SophosHAPeerStateSensor(mock_coordinator).native_value == "auxiliary"
+
+    def test_not_applicable_peer_when_standalone(self, mock_coordinator):
+        mock_coordinator.data["snmp_ha"] = MOCK_HA_DISABLED
+        assert SophosHAPeerStateSensor(mock_coordinator).native_value == "not_applicable"
+
+    def test_none_when_no_data(self, mock_coordinator):
+        mock_coordinator.data = None
+        assert SophosHAPeerStateSensor(mock_coordinator).native_value is None
+
+    def test_attribute_contains_raw_code(self, mock_coordinator):
+        mock_coordinator.data["snmp_ha"] = MOCK_HA_ENABLED
+        assert SophosHAPeerStateSensor(mock_coordinator).extra_state_attributes["state_code"] == 1
+
+
+# ── PSU Binary Sensors ────────────────────────────────────────────────────────
+
+MOCK_HEALTH_WITH_PSUS = {
+    "cpu_temperature_c": None,
+    "npu_temperature_c": None,
+    "fans": {},
+    "psus": {"psu_1": True, "psu_2": False},
+}
+
+
+class TestPSUSensor:
+    def test_is_on_when_psu_operational(self, mock_coordinator):
+        mock_coordinator.data["snmp_health"] = MOCK_HEALTH_WITH_PSUS
+        assert SophosPSUSensor(mock_coordinator, "psu_1").is_on is True
+
+    def test_is_off_when_psu_failed(self, mock_coordinator):
+        mock_coordinator.data["snmp_health"] = MOCK_HEALTH_WITH_PSUS
+        assert SophosPSUSensor(mock_coordinator, "psu_2").is_on is False
+
+    def test_none_when_no_data(self, mock_coordinator):
+        mock_coordinator.data = None
+        assert SophosPSUSensor(mock_coordinator, "psu_1").is_on is None
+
+    def test_none_when_psu_key_absent(self, mock_coordinator):
+        mock_coordinator.data["snmp_health"] = {"psus": {}}
+        assert SophosPSUSensor(mock_coordinator, "psu_1").is_on is None
+
+    def test_none_on_virtual_appliance(self, mock_coordinator):
+        # SFVH returns empty psus dict — entity would not be created,
+        # but if it somehow is, native_value must be None not crash
+        mock_coordinator.data["snmp_health"] = {
+            "cpu_temperature_c": None, "npu_temperature_c": None,
+            "fans": {}, "psus": {},
+        }
+        assert SophosPSUSensor(mock_coordinator, "psu_1").is_on is None
+
+    def test_unique_suffix_per_psu(self, mock_coordinator):
+        e1 = SophosPSUSensor(mock_coordinator, "psu_1")
+        e2 = SophosPSUSensor(mock_coordinator, "psu_2")
+        assert e1._unique_suffix != e2._unique_suffix
+
+
+# ── Hardening: malformed XML field values must not crash state properties ──────
+
+from custom_components.sophos_firewall.entity import field_str
+
+
+class TestFieldStrHardening:
+    """field_str() guarantees a str so downstream .lower()/.upper() is safe."""
+
+    def test_normal_string(self):
+        assert field_str({"Name": "PortA"}, "Name") == "PortA"
+
+    def test_missing_key_returns_default(self):
+        assert field_str({}, "Name") == ""
+        assert field_str({}, "Name", "fallback") == "fallback"
+
+    def test_explicit_none_returns_default(self):
+        assert field_str({"Name": None}, "Name") == ""
+
+    def test_nested_dict_coerced_to_str(self):
+        # Sophos returning <Name><Sub>x</Sub></Name> yields a dict — must not crash
+        result = field_str({"Name": {"Sub": "x"}}, "Name")
+        assert isinstance(result, str)
+        result.lower()  # must not raise
+
+    def test_number_coerced_to_str(self):
+        assert isinstance(field_str({"Status": 1}, "Status"), str)
+
+
+class TestInterfaceSensorHardening:
+    """Interface sensor must survive malformed InterfaceStatus values."""
+
+    def test_none_status_does_not_crash(self, mock_coordinator):
+        mock_coordinator.data["interfaces"] = [{"Name": "PortA", "InterfaceStatus": None}]
+        entity = SophosInterfaceSensor(mock_coordinator, {"Name": "PortA"})
+        # Previously .upper() on None crashed — now returns a clean False
+        assert entity.is_on is False
+
+    def test_nested_dict_status_does_not_crash(self, mock_coordinator):
+        mock_coordinator.data["interfaces"] = [
+            {"Name": "PortA", "InterfaceStatus": {"unexpected": "shape"}}
+        ]
+        entity = SophosInterfaceSensor(mock_coordinator, {"Name": "PortA"})
+        assert entity.is_on is False  # str(dict).upper() != "ON", no crash
+
+
+class TestFirewallRuleSwitchHardening:
+    def test_none_status_does_not_crash(self, mock_coordinator):
+        mock_coordinator.data["firewall_rules"] = [{"Name": "R1", "Status": None}]
+        entity = SophosFirewallRuleSwitch(mock_coordinator, {"Name": "R1"})
+        assert entity.is_on is False

@@ -41,7 +41,7 @@ from typing import Any, TypedDict
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -124,6 +124,18 @@ class SophosCoordinator(DataUpdateCoordinator[SophosData]):
         self._iv_fast      = _o(CONF_INTERVAL_FAST,      DEFAULT_INTERVAL_FAST)
         self._iv_operative = _o(CONF_INTERVAL_OPERATIVE, DEFAULT_INTERVAL_OPERATIVE)
         self._iv_static    = _o(CONF_INTERVAL_STATIC,    DEFAULT_INTERVAL_STATIC)
+
+        # Defense-in-depth: the config flow validates intervals (min=10s), but
+        # options could be set out-of-band (migration, manual .storage edit,
+        # legacy entry). A zero/negative realtime interval would make
+        # update_interval=timedelta(0) and busy-loop the coordinator, hammering
+        # the firewall. Clamp the base interval to a safe floor here.
+        if not isinstance(self._iv_realtime, int) or self._iv_realtime < 5:
+            _LOGGER.warning(
+                "Invalid realtime interval %r — clamping to %ds",
+                self._iv_realtime, DEFAULT_INTERVAL_REALTIME,
+            )
+            self._iv_realtime = DEFAULT_INTERVAL_REALTIME
 
         # Poll toggles — XML
         self._poll_xml_interfaces = _o(CONF_POLL_XML_INTERFACES, DEFAULT_POLL_XML_INTERFACES)
@@ -520,11 +532,6 @@ class SophosCoordinator(DataUpdateCoordinator[SophosData]):
         else:
             self._is_virtual = False
             _LOGGER.debug("Physical appliance confirmed — hardware health polling active")
-
-    def _retained_or_empty_snmp(self) -> dict[str, Any]:
-        if self.data:
-            return {k: self.data.get(k, v) for k, v in self._empty_snmp().items()}
-        return self._empty_snmp()
 
     @staticmethod
     def _empty_snmp() -> dict[str, Any]:

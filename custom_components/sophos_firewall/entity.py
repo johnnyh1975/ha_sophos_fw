@@ -24,6 +24,25 @@ def _slug(text: str) -> str:
     return text.strip("_")
 
 
+def field_str(data: dict, key: str, default: str = "") -> str:
+    """Safely read a string field from a parsed XML dict.
+
+    The XML→dict conversion (_elem_to_dict) yields a str for leaf elements,
+    but a nested dict if the element unexpectedly has children, and the value
+    can also be explicitly None. Calling .lower()/.upper() directly on such a
+    value crashes the entity's state property and can take down a whole
+    platform. This helper guarantees a str is returned so downstream
+    .lower()/.upper()/comparisons are always safe.
+    """
+    value = data.get(key, default)
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return default
+    # dict/list/number from an unexpected XML shape — coerce defensively
+    return str(value)
+
+
 class SophosEntity(CoordinatorEntity[SophosCoordinator]):
     """Base class for all Sophos Firewall entities.
 

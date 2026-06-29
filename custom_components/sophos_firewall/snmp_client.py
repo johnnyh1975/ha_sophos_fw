@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from datetime import datetime, timedelta as _timedelta_type
 from typing import Any
 
@@ -42,6 +43,7 @@ from .const import (
     OID_FAN_TABLE_WALK,
     OID_FTP_HITS,
     OID_HA_CURRENT_STATE,
+    OID_HA_PEER_STATE,
     OID_HA_STATUS,
     OID_HTTP_HITS,
     OID_IPS_VERSION,
@@ -51,15 +53,29 @@ from .const import (
     OID_NPU_TEMPERATURE,
     OID_PSU_TABLE_WALK,
     OID_SMTP_HITS,
+    OID_IMAP_HITS,
+    OID_POP3_HITS,
     OID_SWAP_CAPACITY,
     OID_SWAP_PERCENT,
     OID_UPTIME,
     OID_VPN_WALK_BASE,
     OID_WEBCAT_VERSION,
     SERVICE_OIDS,
+    VPN_COL_ACTIVATED,
+    VPN_COL_NAME,
+    VPN_COL_STATUS,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Serialises the one-time puresnmp security-plugin monkeypatch across
+# concurrent preload() calls. Multiple firewall config entries can run
+# async_setup_entry (and thus preload) in parallel, each in its own executor
+# thread; without this lock two threads could both pass the "_sophos_ha_patched"
+# guard before either sets it, applying the patch twice. The patch is
+# idempotent so this is a hygiene/efficiency fix, not a correctness bug — but
+# serialising it keeps logs clean and avoids redundant plugin discovery.
+_PATCH_LOCK = threading.Lock()
 
 
 def _py(value: Any) -> Any:
@@ -100,6 +116,9 @@ def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(str(v).split()[0])
     except (ValueError, IndexError, AttributeError):
+        _LOGGER.debug(
+            "_safe_int: could not convert %r to int, using default %d", v, default
+        )
         return default
 
 
@@ -206,46 +225,50 @@ class SNMPClient:
             # Guard: only apply the global patch once across all instances.
             # Multiple firewall entries share the same puresnmp module globals;
             # re-patching is harmless but wasteful and confusing in logs.
-            if not getattr(sec_plugin, "_sophos_ha_patched", False):
-                # Build a persistent Loader and populate it once (blocking I/O here
-                # is fine — we're in an executor thread, not the event loop)
-                cached_loader = Loader(
-                    "puresnmp_plugins.security",
-                    sec_plugin.is_valid_sec_plugin,
-                )
-                cached_loader.discovered_plugins = discover_plugins(
-                    "puresnmp_plugins.security",
-                    sec_plugin.is_valid_sec_plugin,
-                )
+            # The lock makes the check-and-set atomic so two concurrent
+            # preload() calls (each in its own executor thread) can't both
+            # apply the patch.
+            with _PATCH_LOCK:
+                if not getattr(sec_plugin, "_sophos_ha_patched", False):
+                    # Build a persistent Loader and populate it once (blocking I/O
+                    # here is fine — we're in an executor thread, not the loop)
+                    cached_loader = Loader(
+                        "puresnmp_plugins.security",
+                        sec_plugin.is_valid_sec_plugin,
+                    )
+                    cached_loader.discovered_plugins = discover_plugins(
+                        "puresnmp_plugins.security",
+                        sec_plugin.is_valid_sec_plugin,
+                    )
 
-                # Monkey-patch security.create() to use the cached loader.
-                # IMPORTANT: loader.create() returns the MODULE, not an instance.
-                # The original security.create() calls result.create() on the module
-                # to get a SecurityModel instance. We must do the same.
-                def _cached_create(identifier: int):
-                    mod = cached_loader.create(identifier)
-                    if mod is None:
-                        from puresnmp.exc import UnknownSecurityModel
-                        raise UnknownSecurityModel(
-                            "puresnmp_plugins.security",
-                            identifier,
-                            sorted(cached_loader.discovered_plugins.keys()),
-                        )
-                    return mod.create()  # ← returns SecurityModel instance, not module
+                    # Monkey-patch security.create() to use the cached loader.
+                    # IMPORTANT: loader.create() returns the MODULE, not an instance.
+                    # The original security.create() calls result.create() on the
+                    # module to get a SecurityModel instance. We must do the same.
+                    def _cached_create(identifier: int):
+                        mod = cached_loader.create(identifier)
+                        if mod is None:
+                            from puresnmp.exc import UnknownSecurityModel
+                            raise UnknownSecurityModel(
+                                "puresnmp_plugins.security",
+                                identifier,
+                                sorted(cached_loader.discovered_plugins.keys()),
+                            )
+                        return mod.create()  # ← SecurityModel instance, not module
 
-                sec_plugin.create = _cached_create
-                sec_plugin._sophos_ha_patched = True
+                    sec_plugin.create = _cached_create
+                    sec_plugin._sophos_ha_patched = True
 
-                # Also patch create_sm in each MPM plugin that imported it
-                import puresnmp_plugins.mpm.v1 as _v1
-                import puresnmp_plugins.mpm.v2c as _v2c
-                _v1.create_sm  = _cached_create
-                _v2c.create_sm = _cached_create
-                try:
-                    import puresnmp_plugins.mpm.v3 as _v3
-                    _v3.create_sm = _cached_create
-                except ImportError:
-                    pass
+                    # Also patch create_sm in each MPM plugin that imported it
+                    import puresnmp_plugins.mpm.v1 as _v1
+                    import puresnmp_plugins.mpm.v2c as _v2c
+                    _v1.create_sm  = _cached_create
+                    _v2c.create_sm = _cached_create
+                    try:
+                        import puresnmp_plugins.mpm.v3 as _v3
+                        _v3.create_sm = _cached_create
+                    except ImportError:
+                        pass
 
             self._client = Client(
                 ip=self._host,
@@ -368,7 +391,7 @@ class SNMPClient:
         oids = [OID_CURRENT_DATE, OID_UPTIME, OID_DISK_CAPACITY, OID_DISK_PERCENT,
                 OID_MEMORY_CAPACITY, OID_MEMORY_PERCENT, OID_SWAP_CAPACITY,
                 OID_SWAP_PERCENT, OID_LIVE_USERS, OID_HTTP_HITS,
-                OID_FTP_HITS, OID_SMTP_HITS]
+                OID_FTP_HITS, OID_SMTP_HITS, OID_IMAP_HITS, OID_POP3_HITS]
         raw = await self._multiget(oids)
         return {
             "current_date":       _safe_str(raw.get(OID_CURRENT_DATE)) or "",
@@ -383,6 +406,8 @@ class SNMPClient:
             "http_hits":          _safe_int(raw.get(OID_HTTP_HITS)),
             "ftp_hits":           _safe_int(raw.get(OID_FTP_HITS)),
             "smtp_hits":          _safe_int(raw.get(OID_SMTP_HITS)),
+            "imap_hits":          _safe_int(raw.get(OID_IMAP_HITS)),
+            "pop3_hits":          _safe_int(raw.get(OID_POP3_HITS)),
         }
 
     async def get_services(self) -> dict[str, int]:
@@ -420,11 +445,11 @@ class SNMPClient:
             field, idx = parts[-2], parts[-1]
             if idx not in tunnels:
                 tunnels[idx] = {"index": idx, "name": "", "conn_status": -1, "activated": -1}
-            if field == "2":
+            if field == VPN_COL_NAME:
                 tunnels[idx]["name"] = _safe_str(value) or ""
-            elif field == "9":
+            elif field == VPN_COL_STATUS:
                 tunnels[idx]["conn_status"] = _safe_int(value, -1)
-            elif field == "10":
+            elif field == VPN_COL_ACTIVATED:
                 tunnels[idx]["activated"] = _safe_int(value, -1)
         return [t for t in tunnels.values() if t["name"]]
 
@@ -439,14 +464,34 @@ class SNMPClient:
         fan_data = await self._walk(OID_FAN_TABLE_WALK)
         psu_data = await self._walk(OID_PSU_TABLE_WALK)
 
-        fans = {
-            f"fan_{oid.rsplit('.', 2)[-2]}": _safe_int(val)
-            for oid, val in fan_data.items() if oid.endswith(".2")
-        }
-        psus = {
-            f"psu_{oid.rsplit('.', 2)[-2]}": _safe_int(val) == 1
-            for oid, val in psu_data.items() if oid.endswith(".2")
-        }
+        def _table_index(oid: str) -> str | None:
+            """Extract the table-row index from an OID like '...<index>.2'.
+
+            Returns None for malformed OIDs (too few components) instead of
+            raising IndexError, so one unexpected OID can't break the whole
+            health fetch.
+            """
+            parts = oid.rsplit(".", 2)
+            if len(parts) < 2:
+                return None
+            return parts[-2]
+
+        fans: dict[str, int] = {}
+        for oid, val in fan_data.items():
+            if not oid.endswith(".2"):
+                continue
+            idx = _table_index(oid)
+            if idx:
+                fans[f"fan_{idx}"] = _safe_int(val)
+
+        psus: dict[str, bool] = {}
+        for oid, val in psu_data.items():
+            if not oid.endswith(".2"):
+                continue
+            idx = _table_index(oid)
+            if idx:
+                psus[f"psu_{idx}"] = _safe_int(val) == 1
+
         return {
             "cpu_temperature_c": _temp(OID_CPU_TEMPERATURE),
             "npu_temperature_c": _temp(OID_NPU_TEMPERATURE),
@@ -455,9 +500,18 @@ class SNMPClient:
         }
 
     async def get_ha_status(self) -> dict[str, Any]:
-        """Return HA status via multiget."""
-        raw = await self._multiget([OID_HA_STATUS, OID_HA_CURRENT_STATE])
+        """Return HA cluster status via multiget.
+
+        OID mapping (sfosXGHAStats .4.x):
+          HaStatusType  — 0=disabled, 1=enabled
+          HaState       — 0=notapplicable, 1=auxiliary, 2=standAlone,
+                          3=primary, 4=faulty, 5=ready
+        """
+        raw = await self._multiget(
+            [OID_HA_STATUS, OID_HA_CURRENT_STATE, OID_HA_PEER_STATE]
+        )
         return {
             "ha_enabled":    _safe_int(raw.get(OID_HA_STATUS)) == 1,
             "current_state": _safe_int(raw.get(OID_HA_CURRENT_STATE)),
+            "peer_state":    _safe_int(raw.get(OID_HA_PEER_STATE)),
         }

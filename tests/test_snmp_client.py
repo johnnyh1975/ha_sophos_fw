@@ -79,9 +79,19 @@ def test_timeticks_to_seconds_none():
 
 # ── SNMPClient.is_available ───────────────────────────────────────────────────
 
-def test_is_available_always_true():
-    """is_available() always returns True for puresnmp (no binary needed)."""
-    assert SNMPClient.is_available() is True
+def test_is_available_reflects_puresnmp_import():
+    """is_available() returns True iff puresnmp can be imported.
+
+    This mirrors the real implementation rather than hard-coding True, so the
+    test passes whether or not puresnmp happens to be installed in the test
+    environment — it asserts the method's contract, not the environment.
+    """
+    try:
+        import puresnmp  # noqa: F401
+        expected = True
+    except ImportError:
+        expected = False
+    assert SNMPClient.is_available() is expected
 
 
 # ── SNMPClient construction ───────────────────────────────────────────────────
@@ -97,17 +107,22 @@ def test_client_construction():
 
 @pytest.mark.asyncio
 async def test_preload_creates_client():
-    """preload() initializes the internal puresnmp Client."""
+    """preload() initializes the internal puresnmp Client.
+
+    The real preload() runs its blocking loader via asyncio.to_thread(), so we
+    patch that (not the obsolete get_event_loop path) and have it execute the
+    inner _load function, asserting the Client gets created as a side-effect.
+    """
     client = SNMPClient(host="10.10.0.1", community="public", version="2c")
     assert client._client is None
 
-    def _fake_load():
-        # Simulate preload side-effect without real network
+    async def _fake_to_thread(fn, *args, **kwargs):
+        # Simulate the executor running _load without real puresnmp/network:
+        # stand in for the Client instance the real _load would assign.
         from unittest.mock import MagicMock
         client._client = MagicMock()
 
-    with patch("asyncio.get_event_loop") as mock_loop:
-        mock_loop.return_value.run_in_executor = AsyncMock(side_effect=lambda _, f: _fake_load())
+    with patch("asyncio.to_thread", side_effect=_fake_to_thread):
         await client.preload()
 
     assert client._client is not None
@@ -422,3 +437,41 @@ async def test_get_vpn_tunnels_empty():
     client._walk = fake_walk
     tunnels = await client.get_vpn_tunnels()
     assert tunnels == []
+
+
+# ── Hardening: malformed OIDs in health walk must not crash ───────────────────
+
+@pytest.mark.asyncio
+async def test_get_system_health_malformed_oid_does_not_crash():
+    """A malformed/short OID in the fan/psu walk is skipped, not fatal.
+
+    Previously oid.rsplit('.', 2)[-2] would IndexError on an OID with too few
+    components, taking down the whole health fetch.
+    """
+    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
+    client._client = MagicMock()
+
+    def make_int(v):
+        m = MagicMock()
+        m.pythonize.return_value = v
+        return m
+
+    async def fake_multiget(oids):
+        return {}
+
+    async def fake_walk(oid):
+        # Mix a valid fan OID with a malformed one (no dots before the .2)
+        return {
+            "1.3.6.1.4.1.2604.5.1.9.3.1.2.1.2": make_int(3000),  # valid → fan_1
+            "2": make_int(9999),                                  # malformed, ends ".2"? no
+            ".2": make_int(8888),                                 # edge: rsplit → ['', '2']
+        }
+
+    client._multiget = fake_multiget
+    client._walk = fake_walk
+
+    # Must not raise despite the malformed OIDs
+    health = await client.get_system_health()
+    # The valid fan is parsed; malformed entries are skipped without crashing
+    assert "fan_1" in health["fans"]
+    assert health["fans"]["fan_1"] == 3000

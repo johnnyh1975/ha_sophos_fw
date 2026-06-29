@@ -6,8 +6,10 @@ import logging
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .const import DOMAIN
 from .coordinator import SophosCoordinator
 from .entity import SophosEntity
 from .sophos_client import SophosAPIError
@@ -47,3 +49,7 @@ class SophosBackupButton(SophosEntity, ButtonEntity):
             await self.coordinator.xml_client.trigger_backup()
         except SophosAPIError as exc:
             _LOGGER.error("Failed to trigger backup: %s", exc)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="backup_failed",
+            ) from exc
