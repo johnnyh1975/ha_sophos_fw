@@ -31,7 +31,7 @@ aioresponses==0.7.9
 # bump. Let homeassistant own that pin; it is installed transitively.
 
 # Coverage reporting for the CI test job
-pytest-cov==6.0.0
+pytest-cov==7.1.0
 
 # The integration's runtime SNMP dependency (mirrors manifest.json)
 puresnmp>=2.0.0
