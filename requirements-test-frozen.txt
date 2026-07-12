@@ -23,7 +23,12 @@ pytest-asyncio==1.4.0
 # HTTP mocking for the XML API client tests (aioresponses intercepts the
 # aiohttp calls in tests/test_sophos_client.py)
 aioresponses==0.7.9
-aiohttp==3.14.1
+
+# NOTE: aiohttp is deliberately NOT pinned here, even though both the
+# integration and the tests import it directly. Home Assistant hard-pins
+# aiohttp itself (2025.1.4 requires aiohttp==3.11.11), so a second pin here
+# is duplication that will collide with pip's resolver on every HA version
+# bump. Let homeassistant own that pin; it is installed transitively.
 
 # Coverage reporting for the CI test job
 pytest-cov==6.0.0
