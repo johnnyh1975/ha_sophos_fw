@@ -1,0 +1,151 @@
+name: Validate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+# Cancels superseded runs on rapid successive pushes to the same PR/branch,
+# so CI minutes aren't spent on runs whose result no longer matters.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hacs:
+    name: HACS Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: HACS validation
+        uses: hacs/action@main
+        with:
+          category: integration
+
+  hassfest:
+    name: Hassfest Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Hassfest validation
+        uses: home-assistant/actions/hassfest@master
+
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements-test-frozen.txt
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-test-frozen.txt
+
+      - name: Run full test suite with coverage
+        run: |
+          python -m pytest tests/ --cov=custom_components/sophos_firewall \
+            --cov-report=term-missing --cov-report=xml -q
+
+      # No coverage threshold gate, deliberately: this is the first time
+      # coverage is measured in CI at all. Setting a number now would mean
+      # picking it with no real baseline behind it. Once a few releases'
+      # worth of numbers exist, revisit whether a ratchet (must not
+      # decrease) or a floor makes sense.
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 30
+
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # Rule selection and the deliberate exclusion of `ruff format` are
+      # documented in pyproject.toml's [tool.ruff] section — read that
+      # before adding rules here.
+      - name: Run ruff check
+        run: ruff check custom_components/
+
+  translations:
+    name: Translation Completeness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check strings.json vs. all translations/*.json
+        run: python3 scripts/check_translations.py
+
+  version-badge:
+    name: Version Badge Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Guards against the README version badge drifting away from
+      # manifest.json between releases — a drift that is easy to miss by
+      # hand and confusing for users comparing the two.
+      - name: Check README badge vs. manifest.json
+        run: python3 scripts/check_version_badge.py
+
+  markdown-links:
+    name: Markdown Link Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # No continue-on-error here: unlike the repo this script came from,
+      # every relative link in this project's README.md and docs/ currently
+      # resolves cleanly, so the check can be a hard gate from day one.
+      # If it starts flagging an anchor with an emoji or em-dash heading,
+      # see the known limitation documented in the script's own docstring
+      # before assuming the link is genuinely broken.
+      - name: Check relative markdown links
+        run: python3 scripts/check_markdown_links.py
