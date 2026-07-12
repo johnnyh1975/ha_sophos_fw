@@ -1,0 +1,32 @@
+# Pinned test/CI dependencies for ha_sophos_fw.
+#
+# Pinned (not ranged) so CI runs are reproducible and a broken upstream
+# release can't turn a green PR red overnight. Dependabot is configured
+# (.github/dependabot.yml, weekly) to open PRs bumping these, so pinning
+# does not mean going stale — it means upgrades arrive as a reviewable
+# change rather than as a surprise.
+#
+# This is test/dev tooling only. The integration's own runtime dependency
+# is declared in custom_components/sophos_firewall/manifest.json
+# ("requirements": ["puresnmp>=2.0.0"]) — puresnmp is repeated below so the
+# test job exercises the integration with its real SNMP library present,
+# rather than only against the import-absent fallback paths.
+
+# Home Assistant itself — provides homeassistant.* imports the integration
+# and its tests rely on (config_entries, helpers, exceptions, ...).
+homeassistant==2025.1.4
+
+# Test framework
+pytest==9.1.1
+pytest-asyncio==1.4.0
+
+# HTTP mocking for the XML API client tests (aioresponses intercepts the
+# aiohttp calls in tests/test_sophos_client.py)
+aioresponses==0.7.9
+aiohttp==3.14.1
+
+# Coverage reporting for the CI test job
+pytest-cov==6.0.0
+
+# The integration's runtime SNMP dependency (mirrors manifest.json)
+puresnmp>=2.0.0

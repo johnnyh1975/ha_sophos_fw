@@ -36,7 +36,7 @@ from xml.sax.saxutils import escape as _xml_escape
 
 import aiohttp
 
-from .const import DEFAULT_PORT, DEFAULT_TIMEOUT, XML_TAG_FIREWALL_RULE
+from .const import DEFAULT_TIMEOUT, XML_TAG_FIREWALL_RULE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -382,7 +382,7 @@ class SophosClient:
             f"</Request>"
         )
         root = await self._post(xml)
-        status_el = root.find(f"FirewallRule/Status")
+        status_el = root.find("FirewallRule/Status")
         if status_el is not None:
             code = status_el.get("code", "200")
             if code not in ("200", ""):

@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from datetime import datetime, timedelta as _timedelta_type
+from datetime import timedelta as _timedelta_type
 from typing import Any
 
 from .const import (

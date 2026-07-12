@@ -6,3 +6,40 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 log_cli = true
 log_cli_level = "WARNING"
+
+[tool.ruff]
+target-version = "py312"
+
+# Only the integration source is linted in CI. tests/ is intentionally
+# excluded: test files have their own noisier patterns (fixtures, mocks,
+# deliberately-unused imports) that would need a separate evaluation pass,
+# and mixing that in would bury real findings.
+include = ["custom_components/sophos_firewall/*.py"]
+
+[tool.ruff.lint]
+# E/F/W: real problems only.
+#   F = Pyflakes            — undefined names, unused imports/variables
+#   E = pycodestyle errors
+#   W = pycodestyle warnings
+#
+# Deliberately NOT enabled — a considered decision, not an oversight. Please
+# do not "fix" this by adding them:
+#
+#   * `ruff format` and formatting-adjacent rules — this codebase uses
+#     column-aligned constant/assignment blocks throughout (see const.py's OID
+#     tables, coordinator.py's interval block). The formatter strips that
+#     alignment: a ~1000-line diff that makes the OID tables materially harder
+#     to read. The alignment is intentional.
+#
+#   * `I` (isort / import sorting) — same reasoning: rewrites import blocks for
+#     purely cosmetic reasons, finds no actual bugs.
+#
+# The CI lint job runs `ruff check custom_components/` only. Formatting is not
+# gated. Run `ruff check --fix` before committing.
+select = ["E", "F", "W"]
+
+ignore = [
+    # Long lines left alone: SNMP OID definitions and documentation URLs are
+    # clearer unwrapped than artificially broken.
+    "E501",
+]

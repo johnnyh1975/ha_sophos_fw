@@ -1,7 +1,7 @@
 # Sophos Firewall — Home Assistant Integration
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![Version](https://img.shields.io/badge/Version-1.0.2-green)](https://github.com/hacs/integration)
+[![Version](https://img.shields.io/badge/Version-1.0.2-green)](https://github.com/johnnyh1975/ha_sophos_fw/releases)
 [![HA Version](https://img.shields.io/badge/HA-2024.9%2B-blue)](https://www.home-assistant.io)
 [![Quality Scale](https://img.shields.io/badge/Quality_Scale-Gold-gold)](https://www.home-assistant.io/docs/quality_scale/)
 
@@ -47,7 +47,7 @@ Firewall-Rules und Web-Filter-Policies erscheinen im Konfigurationsbereich der G
 ### Via HACS (empfohlen)
 
 1. HACS → Integrationen → ⋮ → Benutzerdefinierte Repositories
-2. URL: `https://github.com/<dein-repo>/sophos_firewall`, Kategorie: Integration
+2. URL: `https://github.com/johnnyh1975/ha_sophos_fw`, Kategorie: Integration
 3. Integration suchen: „Sophos Firewall" → Installieren
 4. HA neu starten
 
