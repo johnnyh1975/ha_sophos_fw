@@ -8,7 +8,7 @@
 #
 # This is test/dev tooling only. The integration's own runtime dependency
 # is declared in custom_components/sophos_firewall/manifest.json
-# ("requirements": ["puresnmp>=2.0.0"]) — puresnmp is repeated below so the
+# ("requirements": ["puresnmp>=2.0.1"]) — puresnmp is repeated below so the
 # test job exercises the integration with its real SNMP library present,
 # rather than only against the import-absent fallback paths.
 
@@ -34,4 +34,4 @@ aioresponses==0.7.9
 pytest-cov==7.1.0
 
 # The integration's runtime SNMP dependency (mirrors manifest.json)
-puresnmp>=2.0.0
+puresnmp>=2.0.1
