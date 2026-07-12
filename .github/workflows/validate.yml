@@ -68,7 +68,7 @@ jobs:
       # worth of numbers exist, revisit whether a ratchet (must not
       # decrease) or a floor makes sense.
       - name: Upload coverage report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage.xml
