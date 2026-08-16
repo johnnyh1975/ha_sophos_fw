@@ -14,7 +14,7 @@
 
 # Home Assistant itself — provides homeassistant.* imports the integration
 # and its tests rely on (config_entries, helpers, exceptions, ...).
-homeassistant==2025.1.4
+homeassistant==2026.8.1
 
 # Test framework
 pytest==9.1.1
