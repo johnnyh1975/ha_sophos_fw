@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # The minimum supported Home Assistant: the code must type-check
       # against the oldest HA it runs on (same environment as the tests).
