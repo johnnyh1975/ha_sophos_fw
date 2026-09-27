@@ -1,6 +1,6 @@
 version: 2
 updates:
-  # requirements-test-frozen.txt — pinned test/CI dependencies. Pinning keeps
+  # requirements-test.txt — pinned test/CI dependencies (newer tested HA). Pinning keeps
   # CI reproducible; this keeps it from going stale by surfacing upgrades as
   # reviewable PRs instead of surprises.
   #
@@ -11,6 +11,9 @@ updates:
   # exist in the repo before it can apply it, and it errors out if it doesn't.
   # If you want categorisation, create "dependencies" and "ci" under
   # Settings → Labels first, then add `labels: ["dependencies"]` here.
+  #
+  # .github/ci/requirements-test-min.txt (minimum supported HA) is outside
+  # this directory on purpose and is never bumped automatically.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:

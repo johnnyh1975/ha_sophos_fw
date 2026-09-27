@@ -1,0 +1,45 @@
+# mypy --strict, in its own workflow so it can carry a badge. Strict typing
+# is a Platinum rule of Home Assistant's quality scale, and the one a badge
+# can actually evidence: it reports whether a real check passed.
+name: Typing
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typing:
+    name: Typing (mypy --strict)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # The minimum supported Home Assistant: the code must type-check
+      # against the oldest HA it runs on (same environment as the tests).
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: .github/ci/requirements-test-min.txt
+
+      # Pinned: an unpinned type checker turns each of its releases into a
+      # build break nobody chose.
+      - name: Install Home Assistant 2025.5 and mypy
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r .github/ci/requirements-test-min.txt "mypy==2.3.1"
+
+      # Configuration (strict, files) in pyproject.toml [tool.mypy].
+      - name: Run mypy
+        run: mypy

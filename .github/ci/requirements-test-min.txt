@@ -1,0 +1,19 @@
+# Pinned test dependencies — MINIMUM supported Home Assistant.
+#
+# Must match "homeassistant" in hacs.json; the same minimum Roomba+ uses. Kept
+# out of the repository root on purpose: Dependabot would otherwise "upgrade"
+# the minimum away.
+#
+# Python: Home Assistant 2025.5 runs on Python 3.13.
+
+pytest-homeassistant-custom-component==0.13.245  # homeassistant==2025.5.2
+
+# pycares IS PINNED, and only here. HA 2025.5.2 requires aiodns==3.4.0, which
+# allows any pycares>=4.0.0 but names `pycares.ares_query_a_result` at import
+# time — removed in pycares 5.0.0. Without this pin a fresh install fails with
+# AttributeError on `import aiohttp`, before a single test is collected
+# (verified). Newer HA versions pin an aiodns that supports pycares 5.
+pycares==4.11.0
+
+# The integration's runtime SNMP dependency (mirrors manifest.json).
+puresnmp==2.0.1
