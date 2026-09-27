@@ -2,167 +2,256 @@
   "config": {
     "step": {
       "user": {
-        "title": "Sophos Firewall — Verbindung",
-        "description": "Verbindungsdaten der Sophos Firewall (XML API, Port 4444).",
+        "title": "Mit der Sophos Firewall verbinden",
+        "description": "Auf der Firewall muss die XML-API aktiviert und die IP-Adresse dieses Home Assistant in der API-Konfiguration erlaubt sein.",
         "data": {
-          "host": "Hostname oder IP-Adresse",
+          "host": "Host",
           "port": "API-Port",
           "username": "Benutzername",
           "password": "Passwort",
-          "verify_ssl": "SSL-Zertifikat prüfen"
+          "verify_ssl": "TLS-Zertifikat prüfen"
+        },
+        "data_description": {
+          "host": "IP-Adresse oder Hostname der Firewall.",
+          "port": "Port der Web-Admin-Konsole bzw. der XML-API, meist 4444.",
+          "username": "Ein Firewall-Administrator. Empfohlen: ein eigener API-Administrator mit Nur-Lese-Profil (Lesen/Schreiben nur mit aktiviertem Schreibzugriff).",
+          "password": "Passwort dieses Administrators.",
+          "verify_ssl": "Beim selbstsignierten Zertifikat der Firewall ausgeschaltet lassen. Einschalten, wenn die Firewall ein von Home Assistant vertrautes Zertifikat nutzt."
         }
       },
       "snmp": {
-        "title": "Sophos Firewall — SNMP (optional)",
-        "description": "SNMP aktivieren für CPU, RAM, Uptime, Lizenz- und Dienststatus.\nSNMP muss auf der Firewall unter System → Administration → SNMP aktiviert sein.",
+        "title": "SNMP (optional)",
+        "description": "SNMP liefert die Messwerte, die die XML-API nicht bietet.",
         "data": {
-          "snmp_enabled": "SNMP aktivieren",
-          "snmp_community": "Community String",
-          "snmp_version": "SNMP-Version"
+          "snmp_enabled": "SNMP verwenden",
+          "snmp_community": "Community-String"
+        },
+        "data_description": {
+          "snmp_enabled": "Ergänzt Systemstatistik, Dienste, VPN-Verbindungen, Hardware-Zustand und Lizenzen. Erfordert einen SNMPv2c-Agenten auf der Firewall mit Home Assistant als erlaubtem Manager.",
+          "snmp_community": "Die auf der Firewall eingerichtete SNMPv2c-Community."
         }
       },
       "write_access": {
-        "title": "Sophos Firewall — Schreibzugriff",
-        "description": "⚠ Schreibzugriff erlaubt das Aktivieren/Deaktivieren von Firewall-Rules und Web-Filter-Policies direkt aus Home Assistant.\n\nStandardmäßig deaktiviert. Nur aktivieren wenn du weißt, was du tust.",
+        "title": "Schreibzugriff (optional)",
+        "description": "Schalter ändern die laufende Firewall-Konfiguration. Nur aktivieren, wenn Home Assistant das können soll.",
         "data": {
-          "write_access": "Schreibzugriff aktivieren"
+          "write_access": "Änderungen erlauben"
+        },
+        "data_description": {
+          "write_access": "Legt Schalter an, um Firewall-Regeln zu aktivieren/deaktivieren und die Standardaktion von Web-Filter-Richtlinien zu setzen. Erfordert einen Administrator mit Schreibrecht."
         }
       },
       "polling": {
-        "title": "Abfrage-Konfiguration",
-        "description": "Legt fest welche Daten wie oft abgefragt werden. Alle Standardwerte sind optimal voreingestellt.\n\nWrite-Operationen aus HA (Schalter) lösen immer sofort einen Refresh aus.",
+        "title": "Abfrage",
+        "description": "Wie oft welche Daten gelesen werden. Die Standardwerte passen für die meisten Installationen.",
         "sections": {
           "realtime": {
-            "name": "⚡ Echtzeit",
-            "description": "Daten die sich häufig ändern (Interfaces, System-Metriken, Dienste)",
+            "name": "Echtzeit",
+            "description": "Wird bei jedem Durchlauf abgefragt — das Grundintervall der Integration.",
             "data": {
-              "interval_realtime": "Intervall in Sekunden",
-              "poll_xml_interfaces": "Interfaces — PortA/PortB Status und Zone",
-              "poll_snmp_stats": "System-Statistiken — RAM, Disk, Traffic, Uptime",
-              "poll_snmp_services": "Dienste — IPS, AV, DNS, VPN (21 Dienste)"
+              "interval_realtime": "Intervall (Sekunden)",
+              "poll_xml_interfaces": "Interfaces",
+              "poll_snmp_stats": "Systemstatistik (SNMP)",
+              "poll_snmp_services": "Dienste (SNMP)",
+              "poll_snmp_traffic": "Interface-Traffic (SNMP)"
+            },
+            "data_description": {
+              "interval_realtime": "10–300 s. Alle anderen Stufen werden bei diesen Durchläufen geprüft.",
+              "poll_xml_interfaces": "Link-Status, Zone und IP-Zuweisung jedes Interfaces. Legt auch fest, für welche Interfaces die Traffic-Raten standardmäßig eingeschaltet werden (nur für die hier gelisteten).",
+              "poll_snmp_stats": "CPU-, RAM-, Disk- und Swap-Auslastung, letzter Start, Captive-Portal-Nutzer und Protokoll-Zähler.",
+              "poll_snmp_services": "Status der 21 Firewall-Dienste (IPS, AV, DNS, VPN, …).",
+              "poll_snmp_traffic": "Empfangs-/Senderate und Bytezähler jedes Interfaces (IF-MIB)."
             }
           },
           "fast": {
-            "name": "🔄 Schnell",
-            "description": "Daten die sich gelegentlich ändern (VPN-Tunnel, HA-Status)",
+            "name": "Schnell",
+            "description": "Daten, die sich gelegentlich ändern.",
             "data": {
-              "interval_fast": "Intervall in Sekunden",
-              "poll_snmp_tunnels": "VPN-Tunnel — IPSec Verbindungsstatus",
-              "poll_snmp_ha": "HA-Status — High-Availability"
+              "interval_fast": "Intervall (Sekunden)",
+              "poll_snmp_tunnels": "IPsec-VPN-Verbindungen (SNMP)",
+              "poll_snmp_ha": "Hochverfügbarkeits-Cluster (SNMP)"
+            },
+            "data_description": {
+              "interval_fast": "60–600 s.",
+              "poll_snmp_tunnels": "Ein Verbindungssensor pro IPsec-Verbindung.",
+              "poll_snmp_ha": "Nur sinnvoll, wenn die Firewall als Hochverfügbarkeits-Paar läuft."
             }
           },
           "operative": {
-            "name": "🔧 Operativ",
-            "description": "Daten die sich selten ändern (Firewall-Rules, Hardware-Temps)",
+            "name": "Operativ",
+            "description": "Daten, die sich selten ändern.",
             "data": {
-              "interval_operative": "Intervall in Sekunden",
-              "poll_xml_fw_rules": "Firewall-Rules — alle Regeln mit Status",
-              "poll_snmp_health": "System-Health — Temperaturen, Lüfter (nur Hardware)"
+              "interval_operative": "Intervall (Sekunden)",
+              "poll_xml_fw_rules": "Firewall-Regeln",
+              "poll_snmp_health": "Hardware-Zustand (SNMP)"
+            },
+            "data_description": {
+              "interval_operative": "60–3600 s. Ein in Home Assistant umgeschalteter Schalter wird sofort neu gelesen.",
+              "poll_xml_fw_rules": "Aktiv/Inaktiv-Status jeder Firewall-Regel.",
+              "poll_snmp_health": "Temperaturen, Lüfter und Netzteile. Stoppt auf virtuellen Appliances automatisch."
             }
           },
           "static": {
-            "name": "🗄 Statisch",
-            "description": "Daten die sich kaum ändern (DHCP-Leases, Web-Filter, Lizenzen)",
+            "name": "Statisch",
+            "description": "Daten, die sich kaum ändern.",
             "data": {
-              "interval_static": "Intervall in Sekunden",
-              "poll_xml_dhcp": "DHCP + StaticLeases — Geräte MAC/IP/Hostname",
-              "poll_xml_webfilter": "Web-Filter — DefaultAction Allow/Deny",
-              "poll_xml_backup": "Backup-Konfiguration — Häufigkeit",
-              "poll_snmp_licenses": "Lizenzen — Status und Ablaufdaten"
+              "interval_static": "Intervall (Sekunden)",
+              "poll_xml_dhcp": "DHCP-Server",
+              "poll_xml_webfilter": "Web-Filter-Richtlinien",
+              "poll_xml_backup": "Backup-Zeitplan",
+              "poll_snmp_licenses": "Lizenzen (SNMP)"
+            },
+            "data_description": {
+              "interval_static": "300–86400 s. Hostname, Modell und Firmware werden ebenfalls in diesem Intervall gelesen.",
+              "poll_xml_dhcp": "Status jedes DHCP-Servers und seine statischen Leases.",
+              "poll_xml_webfilter": "Standardaktion (Zulassen/Verweigern) jeder Web-Filter-Richtlinie.",
+              "poll_xml_backup": "Häufigkeit des geplanten Backups.",
+              "poll_snmp_licenses": "Status und Ablaufdatum jedes Lizenzmoduls."
             }
           }
-        },
-        "data": {}
+        }
       },
       "reauth_confirm": {
-        "title": "Erneut anmelden — {host}",
-        "description": "Die Verbindung zur Sophos Firewall wurde unterbrochen (Authentifizierung fehlgeschlagen).\n\nBenutzername: **{username}**\n\nBitte gib das aktuelle Passwort ein, um die Verbindung wiederherzustellen.",
+        "title": "Erneut anmelden",
+        "description": "Die Firewall unter {host} hat das Passwort von **{username}** abgelehnt. Aktuelles Passwort eingeben.",
         "data": {
           "password": "Passwort"
+        },
+        "data_description": {
+          "password": "Passwort dieses Administrators."
         }
       },
       "reconfigure": {
-        "title": "Verbindung ändern — {name}",
-        "description": "Verbindungseinstellungen der Sophos Firewall aktualisieren.",
+        "title": "Verbindung ändern",
+        "description": "Verbindungseinstellungen der Firewall, derzeit unter {host}. Entitäten und ihre Historie bleiben erhalten.",
         "data": {
-          "host": "Hostname oder IP-Adresse",
+          "host": "Host",
           "port": "API-Port",
           "username": "Benutzername",
           "password": "Passwort",
-          "verify_ssl": "SSL-Zertifikat prüfen"
+          "verify_ssl": "TLS-Zertifikat prüfen"
+        },
+        "data_description": {
+          "host": "IP-Adresse oder Hostname der Firewall.",
+          "port": "Port der Web-Admin-Konsole bzw. der XML-API, meist 4444.",
+          "username": "Ein Firewall-Administrator. Empfohlen: ein eigener API-Administrator mit Nur-Lese-Profil (Lesen/Schreiben nur mit aktiviertem Schreibzugriff).",
+          "password": "Passwort dieses Administrators.",
+          "verify_ssl": "Beim selbstsignierten Zertifikat der Firewall ausgeschaltet lassen. Einschalten, wenn die Firewall ein von Home Assistant vertrautes Zertifikat nutzt."
         }
       }
     },
     "error": {
-      "invalid_auth": "Benutzername oder Passwort falsch.",
-      "cannot_connect": "Verbindung zur Firewall fehlgeschlagen. Host und Port prüfen.",
-      "snmp_not_available": "puresnmp noch nicht installiert. HA neu starten und dann SNMP über 'Konfigurieren' aktivieren.",
-      "snmp_cannot_connect": "SNMP-Agent nicht erreichbar. Community String und Firewall-Konfiguration prüfen.",
-      "unknown": "Unbekannter Fehler. Logs prüfen."
+      "invalid_auth": "Die Firewall hat Benutzername oder Passwort abgelehnt.",
+      "api_access_denied": "Die Firewall verweigert den API-Zugriff. XML-API aktivieren und die IP-Adresse dieses Home Assistant in der API-Konfiguration der Firewall erlauben.",
+      "cannot_connect": "Firewall nicht erreichbar. Host und Port prüfen.",
+      "snmp_cannot_connect": "Der SNMP-Agent antwortet nicht. Prüfen, ob SNMP auf der Firewall aktiv ist, den Community-String und ob Home Assistant als Manager erlaubt ist.",
+      "unknown": "Unerwarteter Fehler — siehe Home-Assistant-Log."
     },
     "abort": {
-      "already_configured": "Diese Firewall ist bereits konfiguriert.",
-      "reconfigure_successful": "Verbindungseinstellungen erfolgreich aktualisiert.",
-      "reauth_successful": "Authentifizierung erfolgreich — Integration wird neu geladen."
+      "already_configured": "Diese Firewall ist bereits eingerichtet.",
+      "reauth_successful": "Erneute Anmeldung erfolgreich.",
+      "reconfigure_successful": "Verbindung aktualisiert."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Einstellungen",
-        "description": "SNMP-Zugangsdaten und Abfrage-Konfiguration. Bei Aktivierung von SNMP wird die Verbindung getestet.",
+        "title": "Optionen",
+        "description": "Beim Aktivieren von SNMP oder Ändern des Community-Strings wird die SNMP-Verbindung zuerst getestet. SNMP-Datenquellen wirken nur bei aktivem SNMP.",
+        "data": {
+          "snmp_enabled": "SNMP verwenden",
+          "snmp_community": "Community-String",
+          "write_access": "Änderungen erlauben"
+        },
+        "data_description": {
+          "snmp_enabled": "Ergänzt Systemstatistik, Dienste, VPN-Verbindungen, Hardware-Zustand und Lizenzen. Erfordert einen SNMPv2c-Agenten auf der Firewall mit Home Assistant als erlaubtem Manager.",
+          "snmp_community": "Die auf der Firewall eingerichtete SNMPv2c-Community.",
+          "write_access": "Legt Schalter an, um Firewall-Regeln zu aktivieren/deaktivieren und die Standardaktion von Web-Filter-Richtlinien zu setzen. Erfordert einen Administrator mit Schreibrecht."
+        },
         "sections": {
           "realtime": {
-            "name": "⚡ Echtzeit",
-            "description": "Daten die sich häufig ändern",
+            "name": "Echtzeit",
+            "description": "Wird bei jedem Durchlauf abgefragt — das Grundintervall der Integration.",
             "data": {
-              "interval_realtime": "Intervall in Sekunden",
-              "poll_xml_interfaces": "Interfaces — PortA/PortB Status und Zone",
-              "poll_snmp_stats": "System-Statistiken — RAM, Disk, Traffic, Uptime",
-              "poll_snmp_services": "Dienste — IPS, AV, DNS, VPN (21 Dienste)"
+              "interval_realtime": "Intervall (Sekunden)",
+              "poll_xml_interfaces": "Interfaces",
+              "poll_snmp_stats": "Systemstatistik (SNMP)",
+              "poll_snmp_services": "Dienste (SNMP)",
+              "poll_snmp_traffic": "Interface-Traffic (SNMP)"
+            },
+            "data_description": {
+              "interval_realtime": "10–300 s. Alle anderen Stufen werden bei diesen Durchläufen geprüft.",
+              "poll_xml_interfaces": "Link-Status, Zone und IP-Zuweisung jedes Interfaces. Legt auch fest, für welche Interfaces die Traffic-Raten standardmäßig eingeschaltet werden (nur für die hier gelisteten).",
+              "poll_snmp_stats": "CPU-, RAM-, Disk- und Swap-Auslastung, letzter Start, Captive-Portal-Nutzer und Protokoll-Zähler.",
+              "poll_snmp_services": "Status der 21 Firewall-Dienste (IPS, AV, DNS, VPN, …).",
+              "poll_snmp_traffic": "Empfangs-/Senderate und Bytezähler jedes Interfaces (IF-MIB)."
             }
           },
           "fast": {
-            "name": "🔄 Schnell",
-            "description": "Daten die sich gelegentlich ändern",
+            "name": "Schnell",
+            "description": "Daten, die sich gelegentlich ändern.",
             "data": {
-              "interval_fast": "Intervall in Sekunden",
-              "poll_snmp_tunnels": "VPN-Tunnel — IPSec Verbindungsstatus",
-              "poll_snmp_ha": "HA-Status — High-Availability"
+              "interval_fast": "Intervall (Sekunden)",
+              "poll_snmp_tunnels": "IPsec-VPN-Verbindungen (SNMP)",
+              "poll_snmp_ha": "Hochverfügbarkeits-Cluster (SNMP)"
+            },
+            "data_description": {
+              "interval_fast": "60–600 s.",
+              "poll_snmp_tunnels": "Ein Verbindungssensor pro IPsec-Verbindung.",
+              "poll_snmp_ha": "Nur sinnvoll, wenn die Firewall als Hochverfügbarkeits-Paar läuft."
             }
           },
           "operative": {
-            "name": "🔧 Operativ",
-            "description": "Daten die sich selten ändern",
+            "name": "Operativ",
+            "description": "Daten, die sich selten ändern.",
             "data": {
-              "interval_operative": "Intervall in Sekunden",
-              "poll_xml_fw_rules": "Firewall-Rules — alle Regeln mit Status",
-              "poll_snmp_health": "System-Health — Temperaturen, Lüfter (nur Hardware)"
+              "interval_operative": "Intervall (Sekunden)",
+              "poll_xml_fw_rules": "Firewall-Regeln",
+              "poll_snmp_health": "Hardware-Zustand (SNMP)"
+            },
+            "data_description": {
+              "interval_operative": "60–3600 s. Ein in Home Assistant umgeschalteter Schalter wird sofort neu gelesen.",
+              "poll_xml_fw_rules": "Aktiv/Inaktiv-Status jeder Firewall-Regel.",
+              "poll_snmp_health": "Temperaturen, Lüfter und Netzteile. Stoppt auf virtuellen Appliances automatisch."
             }
           },
           "static": {
-            "name": "🗄 Statisch",
-            "description": "Daten die sich kaum ändern",
+            "name": "Statisch",
+            "description": "Daten, die sich kaum ändern.",
             "data": {
-              "interval_static": "Intervall in Sekunden",
-              "poll_xml_dhcp": "DHCP + StaticLeases — Geräte MAC/IP/Hostname",
-              "poll_xml_webfilter": "Web-Filter — DefaultAction Allow/Deny",
-              "poll_xml_backup": "Backup-Konfiguration — Häufigkeit",
-              "poll_snmp_licenses": "Lizenzen — Status und Ablaufdaten"
+              "interval_static": "Intervall (Sekunden)",
+              "poll_xml_dhcp": "DHCP-Server",
+              "poll_xml_webfilter": "Web-Filter-Richtlinien",
+              "poll_xml_backup": "Backup-Zeitplan",
+              "poll_snmp_licenses": "Lizenzen (SNMP)"
+            },
+            "data_description": {
+              "interval_static": "300–86400 s. Hostname, Modell und Firmware werden ebenfalls in diesem Intervall gelesen.",
+              "poll_xml_dhcp": "Status jedes DHCP-Servers und seine statischen Leases.",
+              "poll_xml_webfilter": "Standardaktion (Zulassen/Verweigern) jeder Web-Filter-Richtlinie.",
+              "poll_xml_backup": "Häufigkeit des geplanten Backups.",
+              "poll_snmp_licenses": "Status und Ablaufdatum jedes Lizenzmoduls."
             }
           }
-        },
-        "data": {
-          "snmp_enabled": "SNMP aktivieren",
-          "snmp_community": "SNMP Community String",
-          "snmp_version": "SNMP-Version",
-          "write_access": "Schreibzugriff (Firewall-Rules, Web-Filter)"
         }
       }
+    },
+    "error": {
+      "snmp_cannot_connect": "Der SNMP-Agent antwortet nicht. Prüfen, ob SNMP auf der Firewall aktiv ist, den Community-String und ob Home Assistant als Manager erlaubt ist.",
+      "unknown": "Unerwarteter Fehler — siehe Home-Assistant-Log."
     }
   },
   "entity": {
     "binary_sensor": {
+      "interface_status": {
+        "name": "Netz · Interface {name}"
+      },
+      "firewall_rule_status": {
+        "name": "Regel {name}"
+      },
+      "vpn_tunnel_status": {
+        "name": "VPN {name}"
+      },
       "ha_enabled": {
         "name": "Hochverfügbarkeit · Status"
       },
@@ -171,6 +260,74 @@
       }
     },
     "sensor": {
+      "services_summary": {
+        "name": "System · Dienste"
+      },
+      "licenses_summary": {
+        "name": "Sicherheit · Lizenzen"
+      },
+      "memory_percent": {
+        "name": "System · RAM-Auslastung"
+      },
+      "disk_percent": {
+        "name": "System · Disk-Auslastung"
+      },
+      "swap_percent": {
+        "name": "System · Swap-Auslastung"
+      },
+      "uptime": {
+        "name": "System · Letzter Start"
+      },
+      "http_hits": {
+        "name": "Netz · HTTP-Verbindungen"
+      },
+      "smtp_hits": {
+        "name": "Netz · SMTP-Verbindungen"
+      },
+      "live_users": {
+        "name": "Netz · Aktive Captive-Portal-Nutzer"
+      },
+      "cpu_temperature": {
+        "name": "System · CPU-Temperatur"
+      },
+      "npu_temperature": {
+        "name": "System · NPU-Temperatur"
+      },
+      "fan_speed": {
+        "name": "System · Lüfter {fan}"
+      },
+      "dhcp_leases": {
+        "name": "Netz · DHCP-Leases {server}",
+        "state": {
+          "off": "Außer Betrieb",
+          "on": "In Betrieb"
+        }
+      },
+      "web_filter_default_action": {
+        "name": "Sicherheit · Web-Filter-Standardaktion",
+        "state": {
+          "allow": "Zulassen",
+          "deny": "Verweigern"
+        }
+      },
+      "backup_frequency": {
+        "name": "System · Backup-Häufigkeit",
+        "state": {
+          "never": "Nie",
+          "daily": "Täglich",
+          "weekly": "Wöchentlich",
+          "monthly": "Monatlich"
+        }
+      },
+      "ftp_hits": {
+        "name": "Netz · FTP-Verbindungen"
+      },
+      "ips_version": {
+        "name": "Sicherheit · IPS-Signaturversion"
+      },
+      "webcat_version": {
+        "name": "Sicherheit · Webcat-Version"
+      },
       "ha_current_state": {
         "name": "Hochverfügbarkeit · Rolle (dieser Knoten)",
         "state": {
@@ -192,11 +349,59 @@
           "faulty": "Fehler",
           "ready": "Bereit"
         }
+      },
+      "imap_hits": {
+        "name": "Netz · IMAP-Verbindungen"
+      },
+      "pop3_hits": {
+        "name": "Netz · POP3-Verbindungen"
+      },
+      "cpu_usage": {
+        "name": "System · CPU-Auslastung"
+      },
+      "cpu_core": {
+        "name": "System · CPU-Kern {core}"
+      },
+      "traffic_rx_rate": {
+        "name": "Netz · Interface {name} empfangen"
+      },
+      "traffic_tx_rate": {
+        "name": "Netz · Interface {name} gesendet"
+      },
+      "traffic_rx_bytes": {
+        "name": "Netz · Interface {name} empfangen gesamt"
+      },
+      "traffic_tx_bytes": {
+        "name": "Netz · Interface {name} gesendet gesamt"
+      },
+      "service": {
+        "name": "System · Dienst {name}",
+        "state": {
+          "untouched": "Unberührt",
+          "stopped": "Gestoppt",
+          "initializing": "Startet",
+          "running": "Läuft",
+          "exiting": "Beendet sich",
+          "dead": "Abgestürzt",
+          "frozen": "Eingefroren",
+          "unregistered": "Nicht registriert"
+        }
+      },
+      "license": {
+        "name": "Sicherheit · Lizenz {name}",
+        "state": {
+          "none": "Keine",
+          "evaluating": "Evaluierung",
+          "not_subscribed": "Nicht abonniert",
+          "subscribed": "Abonniert",
+          "expired": "Abgelaufen",
+          "deactivated": "Deaktiviert"
+        }
       }
     },
     "switch": {
       "firewall_rule": {
-        "name": "Rule {name}"
+        "name": "Regel {name}"
       },
       "web_filter_policy": {
         "name": "Web-Filter {name}"
@@ -209,23 +414,36 @@
     }
   },
   "exceptions": {
-    "setup_auth_failed": {
-      "message": "Authentifizierung fehlgeschlagen — Benutzername/Passwort prüfen."
-    },
-    "setup_cannot_connect": {
-      "message": "Sophos Firewall unter {host}:{port} nicht erreichbar."
-    },
     "auth_failed": {
-      "message": "Authentifizierung fehlgeschlagen — Integration wird für Reauth pausiert."
+      "message": "Authentifizierung fehlgeschlagen — die Integration pausiert, bis die Zugangsdaten aktualisiert sind."
     },
-    "xml_api_error": {
-      "message": "XML-API-Fehler beim Datenabruf — nächster Versuch beim nächsten Polling-Zyklus."
+    "xml_unreachable": {
+      "message": "Die XML-API der Sophos Firewall unter {host} ist nicht erreichbar: {error}"
+    },
+    "snmp_unreachable": {
+      "message": "Der SNMP-Agent der Sophos Firewall unter {host} antwortet nicht: {error}"
+    },
+    "api_access_denied": {
+      "message": "Die Sophos Firewall unter {host} verweigert den API-Zugriff (Code {code}). XML-API aktivieren und die IP-Adresse dieses Home Assistant in der API-Konfiguration der Firewall als erlaubte Adresse eintragen."
     },
     "backup_failed": {
-      "message": "Backup konnte nicht ausgelöst werden — Backup-Konfiguration der Firewall prüfen (z.B. Mail-Server bei E-Mail-Backups)."
+      "message": "Backup konnte nicht ausgelöst werden: {error}. Backup-Konfiguration der Firewall prüfen (z. B. Mail-Server bei E-Mail-Backups)."
     },
     "write_failed": {
-      "message": "Die Firewall hat die Änderung abgelehnt — möglicherweise fehlt Schreibzugriff oder die Regel/Richtlinie existiert nicht mehr."
+      "message": "{name} konnte nicht geändert werden: {error}"
+    },
+    "no_data": {
+      "message": "Die Sophos Firewall unter {host} hat keine verwertbaren Daten geliefert: {error}"
+    }
+  },
+  "issues": {
+    "api_access_denied": {
+      "title": "{title}: API-Zugriff verweigert",
+      "description": "Die Sophos Firewall unter {host} lehnt die API-Anfragen von Home Assistant ab (Statuscode {code}).\n\nAuf der Firewall unter **Backup & firmware > API** die API-Konfiguration aktivieren und die IP-Adresse von Home Assistant als erlaubte IP-Adresse eintragen.\n\nDie Integration versucht es weiter; diese Meldung verschwindet, sobald der Zugriff funktioniert."
+    },
+    "snmp_unreachable": {
+      "title": "{title}: SNMP-Agent antwortet nicht",
+      "description": "Der SNMP-Agent der Sophos Firewall unter {host} hat seit dem Start der Integration über 10 Minuten lang nicht geantwortet, daher sind alle SNMP-Sensoren nicht verfügbar.\n\nAuf der Firewall prüfen:\n- **Administration > SNMP**: Der SNMP-Agent ist aktiviert, und es gibt eine SNMPv1/v2c-Community, deren Name mit der in Home Assistant eingetragenen Community übereinstimmt und deren IP-Adresse die von Home Assistant ist.\n- **Administration > Device access**: SNMP ist für die Zone erlaubt, in der Home Assistant steht.\n\nWer SNMP nicht nutzt, schaltet es in den Optionen der Integration ab. Diese Meldung verschwindet, sobald der Agent antwortet."
     }
   }
 }

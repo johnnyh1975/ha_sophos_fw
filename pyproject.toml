@@ -6,6 +6,9 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 log_cli = true
 log_cli_level = "WARNING"
+# A hanging test (e.g. an SNMP timeout under a frozen clock) fails instead of
+# blocking CI until the job limit.
+timeout = 60
 
 [tool.ruff]
 target-version = "py312"
@@ -43,3 +46,23 @@ ignore = [
     # clearer unwrapped than artificially broken.
     "E501",
 ]
+
+# Same exclusions as Home Assistant core's coverage measurement
+# (home-assistant/core, pyproject.toml, [tool.coverage.report]) — the figure
+# the quality scale's test-coverage rule is judged by. Nothing beyond core's
+# list, and no pragma comments on real code.
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "def __repr__",
+  "raise AssertionError",
+  "raise NotImplementedError",
+  "if TYPE_CHECKING:",
+  "@overload",
+]
+
+# mypy --strict, run by .github/workflows/typing.yml on the minimum Home
+# Assistant (the quality scale's strict-typing rule). No disabled error codes.
+[tool.mypy]
+strict = true
+files = ["custom_components/sophos_firewall"]

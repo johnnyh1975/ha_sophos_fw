@@ -1,0 +1,875 @@
+{
+  "binary_sensor.5heynexg_ha_enabled": {
+    "device_class": "running",
+    "disabled_by_default": false,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "ha_enabled",
+    "unique_id": "sophos_test_entry_ha_enabled",
+    "unit": null
+  },
+  "binary_sensor.5heynexg_iface_porta": {
+    "device_class": "connectivity",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": null,
+    "translation_key": "interface_status",
+    "unique_id": "sophos_test_entry_iface_PortA",
+    "unit": null
+  },
+  "binary_sensor.5heynexg_iface_portb": {
+    "device_class": "connectivity",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": null,
+    "translation_key": "interface_status",
+    "unique_id": "sophos_test_entry_iface_PortB",
+    "unit": null
+  },
+  "binary_sensor.5heynexg_psu_psu_1": {
+    "device_class": "power",
+    "disabled_by_default": false,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "psu_status",
+    "unique_id": "sophos_test_entry_psu_psu_1",
+    "unit": null
+  },
+  "binary_sensor.5heynexg_psu_psu_2": {
+    "device_class": "power",
+    "disabled_by_default": false,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "psu_status",
+    "unique_id": "sophos_test_entry_psu_psu_2",
+    "unit": null
+  },
+  "binary_sensor.5heynexg_vpn_1": {
+    "device_class": "connectivity",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": null,
+    "translation_key": "vpn_tunnel_status",
+    "unique_id": "sophos_test_entry_vpn_1",
+    "unit": null
+  },
+  "binary_sensor.5heynexg_vpn_2": {
+    "device_class": "connectivity",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": null,
+    "translation_key": "vpn_tunnel_status",
+    "unique_id": "sophos_test_entry_vpn_2",
+    "unit": null
+  },
+  "binary_sensor.5heynexg_vpn_3": {
+    "device_class": "connectivity",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": null,
+    "translation_key": "vpn_tunnel_status",
+    "unique_id": "sophos_test_entry_vpn_3",
+    "unit": null
+  },
+  "button.5heynexg_button_backup": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": "config",
+    "state_class": null,
+    "translation_key": "trigger_backup",
+    "unique_id": "sophos_test_entry_button_backup",
+    "unit": null
+  },
+  "sensor.5heynexg_dhcp_leases_guest_dhcp": {
+    "device_class": "enum",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": null,
+    "translation_key": "dhcp_leases",
+    "unique_id": "sophos_test_entry_dhcp_leases_Guest_DHCP",
+    "unit": null
+  },
+  "sensor.5heynexg_dhcp_leases_main_dhcp": {
+    "device_class": "enum",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": null,
+    "translation_key": "dhcp_leases",
+    "unique_id": "sophos_test_entry_dhcp_leases_Main_DHCP",
+    "unit": null
+  },
+  "sensor.5heynexg_ha_current_state": {
+    "device_class": "enum",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": null,
+    "translation_key": "ha_current_state",
+    "unique_id": "sophos_test_entry_ha_current_state",
+    "unit": null
+  },
+  "sensor.5heynexg_ha_peer_state": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "ha_peer_state",
+    "unique_id": "sophos_test_entry_ha_peer_state",
+    "unit": null
+  },
+  "sensor.5heynexg_license_base_fw": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "license",
+    "unique_id": "sophos_test_entry_license_base_fw",
+    "unit": null
+  },
+  "sensor.5heynexg_license_central_orch": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "license",
+    "unique_id": "sophos_test_entry_license_central_orch",
+    "unit": null
+  },
+  "sensor.5heynexg_license_enh_plus": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "license",
+    "unique_id": "sophos_test_entry_license_enh_plus",
+    "unit": null
+  },
+  "sensor.5heynexg_license_enh_support": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "license",
+    "unique_id": "sophos_test_entry_license_enh_support",
+    "unit": null
+  },
+  "sensor.5heynexg_license_mail_protect": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "license",
+    "unique_id": "sophos_test_entry_license_mail_protect",
+    "unit": null
+  },
+  "sensor.5heynexg_license_net_protect": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "license",
+    "unique_id": "sophos_test_entry_license_net_protect",
+    "unit": null
+  },
+  "sensor.5heynexg_license_sandstorm": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "license",
+    "unique_id": "sophos_test_entry_license_sandstorm",
+    "unit": null
+  },
+  "sensor.5heynexg_license_web_protect": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "license",
+    "unique_id": "sophos_test_entry_license_web_protect",
+    "unit": null
+  },
+  "sensor.5heynexg_license_web_server": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "license",
+    "unique_id": "sophos_test_entry_license_web_server",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_backup_frequency": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "backup_frequency",
+    "unique_id": "sophos_test_entry_sensor_backup_frequency",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_cpu_core_1": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "cpu_core",
+    "unique_id": "sophos_test_entry_sensor_cpu_core_1",
+    "unit": "%"
+  },
+  "sensor.5heynexg_sensor_cpu_core_2": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "cpu_core",
+    "unique_id": "sophos_test_entry_sensor_cpu_core_2",
+    "unit": "%"
+  },
+  "sensor.5heynexg_sensor_cpu_core_3": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "cpu_core",
+    "unique_id": "sophos_test_entry_sensor_cpu_core_3",
+    "unit": "%"
+  },
+  "sensor.5heynexg_sensor_cpu_core_4": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "cpu_core",
+    "unique_id": "sophos_test_entry_sensor_cpu_core_4",
+    "unit": "%"
+  },
+  "sensor.5heynexg_sensor_cpu_temperature": {
+    "device_class": "temperature",
+    "disabled_by_default": false,
+    "entity_category": "diagnostic",
+    "state_class": "measurement",
+    "translation_key": "cpu_temperature",
+    "unique_id": "sophos_test_entry_sensor_cpu_temperature",
+    "unit": "\u00b0C"
+  },
+  "sensor.5heynexg_sensor_cpu_usage": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "cpu_usage",
+    "unique_id": "sophos_test_entry_sensor_cpu_usage",
+    "unit": "%"
+  },
+  "sensor.5heynexg_sensor_disk_percent": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "disk_percent",
+    "unique_id": "sophos_test_entry_sensor_disk_percent",
+    "unit": "%"
+  },
+  "sensor.5heynexg_sensor_fan_1": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": "measurement",
+    "translation_key": "fan_speed",
+    "unique_id": "sophos_test_entry_sensor_fan_1",
+    "unit": "RPM"
+  },
+  "sensor.5heynexg_sensor_fan_2": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": "measurement",
+    "translation_key": "fan_speed",
+    "unique_id": "sophos_test_entry_sensor_fan_2",
+    "unit": "RPM"
+  },
+  "sensor.5heynexg_sensor_fan_3": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": "measurement",
+    "translation_key": "fan_speed",
+    "unique_id": "sophos_test_entry_sensor_fan_3",
+    "unit": "RPM"
+  },
+  "sensor.5heynexg_sensor_ftp_hits": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "ftp_hits",
+    "unique_id": "sophos_test_entry_sensor_ftp_hits",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_http_hits": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "http_hits",
+    "unique_id": "sophos_test_entry_sensor_http_hits",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_imap_hits": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "imap_hits",
+    "unique_id": "sophos_test_entry_sensor_imap_hits",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_ips_version": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "ips_version",
+    "unique_id": "sophos_test_entry_sensor_ips_version",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_licenses_summary": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "licenses_summary",
+    "unique_id": "sophos_test_entry_sensor_licenses_summary",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_live_users": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "live_users",
+    "unique_id": "sophos_test_entry_sensor_live_users",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_memory_percent": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "memory_percent",
+    "unique_id": "sophos_test_entry_sensor_memory_percent",
+    "unit": "%"
+  },
+  "sensor.5heynexg_sensor_npu_temperature": {
+    "device_class": "temperature",
+    "disabled_by_default": false,
+    "entity_category": "diagnostic",
+    "state_class": "measurement",
+    "translation_key": "npu_temperature",
+    "unique_id": "sophos_test_entry_sensor_npu_temperature",
+    "unit": "\u00b0C"
+  },
+  "sensor.5heynexg_sensor_pop3_hits": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "pop3_hits",
+    "unique_id": "sophos_test_entry_sensor_pop3_hits",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_services_summary": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "services_summary",
+    "unique_id": "sophos_test_entry_sensor_services_summary",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_smtp_hits": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "smtp_hits",
+    "unique_id": "sophos_test_entry_sensor_smtp_hits",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_swap_percent": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "swap_percent",
+    "unique_id": "sophos_test_entry_sensor_swap_percent",
+    "unit": "%"
+  },
+  "sensor.5heynexg_sensor_uptime": {
+    "device_class": "timestamp",
+    "disabled_by_default": false,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "uptime",
+    "unique_id": "sophos_test_entry_sensor_uptime",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_web_filter_default_action": {
+    "device_class": "enum",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": null,
+    "translation_key": "web_filter_default_action",
+    "unique_id": "sophos_test_entry_sensor_web_filter_default_action",
+    "unit": null
+  },
+  "sensor.5heynexg_sensor_webcat_version": {
+    "device_class": null,
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "webcat_version",
+    "unique_id": "sophos_test_entry_sensor_webcat_version",
+    "unit": null
+  },
+  "sensor.5heynexg_service_antispam": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_antispam",
+    "unit": null
+  },
+  "sensor.5heynexg_service_apache": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_apache",
+    "unit": null
+  },
+  "sensor.5heynexg_service_av": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_av",
+    "unit": null
+  },
+  "sensor.5heynexg_service_database": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_database",
+    "unit": null
+  },
+  "sensor.5heynexg_service_dgd": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_dgd",
+    "unit": null
+  },
+  "sensor.5heynexg_service_dns": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_dns",
+    "unit": null
+  },
+  "sensor.5heynexg_service_drouting": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_drouting",
+    "unit": null
+  },
+  "sensor.5heynexg_service_ftp": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_ftp",
+    "unit": null
+  },
+  "sensor.5heynexg_service_garner": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_garner",
+    "unit": null
+  },
+  "sensor.5heynexg_service_ha_svc": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_ha_svc",
+    "unit": null
+  },
+  "sensor.5heynexg_service_http": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_http",
+    "unit": null
+  },
+  "sensor.5heynexg_service_imap": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_imap",
+    "unit": null
+  },
+  "sensor.5heynexg_service_ips": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_ips",
+    "unit": null
+  },
+  "sensor.5heynexg_service_ipsec_vpn": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_ipsec_vpn",
+    "unit": null
+  },
+  "sensor.5heynexg_service_network": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_network",
+    "unit": null
+  },
+  "sensor.5heynexg_service_ntp": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_ntp",
+    "unit": null
+  },
+  "sensor.5heynexg_service_pop3": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_pop3",
+    "unit": null
+  },
+  "sensor.5heynexg_service_smtp": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_smtp",
+    "unit": null
+  },
+  "sensor.5heynexg_service_sshd": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_sshd",
+    "unit": null
+  },
+  "sensor.5heynexg_service_ssl_vpn": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_ssl_vpn",
+    "unit": null
+  },
+  "sensor.5heynexg_service_tomcat": {
+    "device_class": "enum",
+    "disabled_by_default": true,
+    "entity_category": "diagnostic",
+    "state_class": null,
+    "translation_key": "service",
+    "unique_id": "sophos_test_entry_service_tomcat",
+    "unit": null
+  },
+  "sensor.5heynexg_traffic_rx_bytes_guestap": {
+    "device_class": "data_size",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "traffic_rx_bytes",
+    "unique_id": "sophos_test_entry_traffic_rx_bytes_GuestAP",
+    "unit": "GB"
+  },
+  "sensor.5heynexg_traffic_rx_bytes_porta": {
+    "device_class": "data_size",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "traffic_rx_bytes",
+    "unique_id": "sophos_test_entry_traffic_rx_bytes_PortA",
+    "unit": "GB"
+  },
+  "sensor.5heynexg_traffic_rx_bytes_porta_30": {
+    "device_class": "data_size",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "traffic_rx_bytes",
+    "unique_id": "sophos_test_entry_traffic_rx_bytes_PortA.30",
+    "unit": "GB"
+  },
+  "sensor.5heynexg_traffic_rx_bytes_porta_40": {
+    "device_class": "data_size",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "traffic_rx_bytes",
+    "unique_id": "sophos_test_entry_traffic_rx_bytes_PortA.40",
+    "unit": "GB"
+  },
+  "sensor.5heynexg_traffic_rx_bytes_porta_50": {
+    "device_class": "data_size",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "traffic_rx_bytes",
+    "unique_id": "sophos_test_entry_traffic_rx_bytes_PortA.50",
+    "unit": "GB"
+  },
+  "sensor.5heynexg_traffic_rx_bytes_portb": {
+    "device_class": "data_size",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "traffic_rx_bytes",
+    "unique_id": "sophos_test_entry_traffic_rx_bytes_PortB",
+    "unit": "GB"
+  },
+  "sensor.5heynexg_traffic_rx_rate_guestap": {
+    "device_class": "data_rate",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "traffic_rx_rate",
+    "unique_id": "sophos_test_entry_traffic_rx_rate_GuestAP",
+    "unit": "Mbit/s"
+  },
+  "sensor.5heynexg_traffic_rx_rate_porta": {
+    "device_class": "data_rate",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "traffic_rx_rate",
+    "unique_id": "sophos_test_entry_traffic_rx_rate_PortA",
+    "unit": "Mbit/s"
+  },
+  "sensor.5heynexg_traffic_rx_rate_porta_30": {
+    "device_class": "data_rate",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "traffic_rx_rate",
+    "unique_id": "sophos_test_entry_traffic_rx_rate_PortA.30",
+    "unit": "Mbit/s"
+  },
+  "sensor.5heynexg_traffic_rx_rate_porta_40": {
+    "device_class": "data_rate",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "traffic_rx_rate",
+    "unique_id": "sophos_test_entry_traffic_rx_rate_PortA.40",
+    "unit": "Mbit/s"
+  },
+  "sensor.5heynexg_traffic_rx_rate_porta_50": {
+    "device_class": "data_rate",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "traffic_rx_rate",
+    "unique_id": "sophos_test_entry_traffic_rx_rate_PortA.50",
+    "unit": "Mbit/s"
+  },
+  "sensor.5heynexg_traffic_rx_rate_portb": {
+    "device_class": "data_rate",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "traffic_rx_rate",
+    "unique_id": "sophos_test_entry_traffic_rx_rate_PortB",
+    "unit": "Mbit/s"
+  },
+  "sensor.5heynexg_traffic_tx_bytes_guestap": {
+    "device_class": "data_size",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "traffic_tx_bytes",
+    "unique_id": "sophos_test_entry_traffic_tx_bytes_GuestAP",
+    "unit": "GB"
+  },
+  "sensor.5heynexg_traffic_tx_bytes_porta": {
+    "device_class": "data_size",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "traffic_tx_bytes",
+    "unique_id": "sophos_test_entry_traffic_tx_bytes_PortA",
+    "unit": "GB"
+  },
+  "sensor.5heynexg_traffic_tx_bytes_porta_30": {
+    "device_class": "data_size",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "traffic_tx_bytes",
+    "unique_id": "sophos_test_entry_traffic_tx_bytes_PortA.30",
+    "unit": "GB"
+  },
+  "sensor.5heynexg_traffic_tx_bytes_porta_40": {
+    "device_class": "data_size",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "traffic_tx_bytes",
+    "unique_id": "sophos_test_entry_traffic_tx_bytes_PortA.40",
+    "unit": "GB"
+  },
+  "sensor.5heynexg_traffic_tx_bytes_porta_50": {
+    "device_class": "data_size",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "traffic_tx_bytes",
+    "unique_id": "sophos_test_entry_traffic_tx_bytes_PortA.50",
+    "unit": "GB"
+  },
+  "sensor.5heynexg_traffic_tx_bytes_portb": {
+    "device_class": "data_size",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "total_increasing",
+    "translation_key": "traffic_tx_bytes",
+    "unique_id": "sophos_test_entry_traffic_tx_bytes_PortB",
+    "unit": "GB"
+  },
+  "sensor.5heynexg_traffic_tx_rate_guestap": {
+    "device_class": "data_rate",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "traffic_tx_rate",
+    "unique_id": "sophos_test_entry_traffic_tx_rate_GuestAP",
+    "unit": "Mbit/s"
+  },
+  "sensor.5heynexg_traffic_tx_rate_porta": {
+    "device_class": "data_rate",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "traffic_tx_rate",
+    "unique_id": "sophos_test_entry_traffic_tx_rate_PortA",
+    "unit": "Mbit/s"
+  },
+  "sensor.5heynexg_traffic_tx_rate_porta_30": {
+    "device_class": "data_rate",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "traffic_tx_rate",
+    "unique_id": "sophos_test_entry_traffic_tx_rate_PortA.30",
+    "unit": "Mbit/s"
+  },
+  "sensor.5heynexg_traffic_tx_rate_porta_40": {
+    "device_class": "data_rate",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "traffic_tx_rate",
+    "unique_id": "sophos_test_entry_traffic_tx_rate_PortA.40",
+    "unit": "Mbit/s"
+  },
+  "sensor.5heynexg_traffic_tx_rate_porta_50": {
+    "device_class": "data_rate",
+    "disabled_by_default": true,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "traffic_tx_rate",
+    "unique_id": "sophos_test_entry_traffic_tx_rate_PortA.50",
+    "unit": "Mbit/s"
+  },
+  "sensor.5heynexg_traffic_tx_rate_portb": {
+    "device_class": "data_rate",
+    "disabled_by_default": false,
+    "entity_category": null,
+    "state_class": "measurement",
+    "translation_key": "traffic_tx_rate",
+    "unique_id": "sophos_test_entry_traffic_tx_rate_PortB",
+    "unit": "Mbit/s"
+  },
+  "switch.5heynexg_switch_fwrule_allow_lan_to_iot": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": "config",
+    "state_class": null,
+    "translation_key": "firewall_rule",
+    "unique_id": "sophos_test_entry_switch_fwrule_Allow LAN to IoT",
+    "unit": null
+  },
+  "switch.5heynexg_switch_fwrule_block_guest": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": "config",
+    "state_class": null,
+    "translation_key": "firewall_rule",
+    "unique_id": "sophos_test_entry_switch_fwrule_Block Guest",
+    "unit": null
+  },
+  "switch.5heynexg_switch_webfilter_default_policy": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": "config",
+    "state_class": null,
+    "translation_key": "web_filter_policy",
+    "unique_id": "sophos_test_entry_switch_webfilter_Default Policy",
+    "unit": null
+  },
+  "switch.5heynexg_switch_webfilter_kids": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": "config",
+    "state_class": null,
+    "translation_key": "web_filter_policy",
+    "unique_id": "sophos_test_entry_switch_webfilter_Kids",
+    "unit": null
+  }
+}

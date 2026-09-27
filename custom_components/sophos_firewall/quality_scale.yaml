@@ -1,71 +1,129 @@
+# Home Assistant integration quality scale — self-assessment for v1.1.0.
+#
+# All 54 rules of hassfest's rule list (script/hassfest/quality_scale.py).
+# hassfest does not check this file for custom integrations, and no reviewer
+# grades it: every "done" below names where it is fulfilled, so it can be
+# checked against the code and the README.
+
 rules:
   # ── Bronze ────────────────────────────────────────────────────────────────
   action-setup:
     status: exempt
-    comment: >
-      Integration does not register custom actions (services). All control is
-      via entity platforms (switch, button).
+    comment: No service actions; control is via switch and button entities.
   appropriate-polling:
     status: done
     comment: >
-      5-tier coordinator: 30 s realtime, 2 min fast, 10 min operative,
-      30 min static, once-only. Intervals are user-configurable via Options Flow.
-  brands: done
-  common-modules: done
-  config-flow: done
-  config-flow-test-coverage:
+      Four tiers per endpoint (default 30 s / 2 min / 10 min / 30 min),
+      configurable in the options; XML requests one at a time because the
+      firewall answers them one after another.
+  brands:
     status: done
     comment: >
-      test_config_flow.py covers all steps (user, snmp, write_access, polling),
-      both success and error paths, and all special flows (reauth_confirm,
-      reconfigure) including wrong-password and cannot-connect cases.
-  dependency-transparency: done
+      Local brand images in custom_components/sophos_firewall/brand/,
+      shown by Home Assistant 2026.3 and newer; older versions show no logo.
+      Not submitted to the home-assistant/brands repository.
+  common-modules:
+    status: done
+    comment: coordinator.py (coordinators), entity.py (base entities).
+  config-flow:
+    status: done
+    comment: >
+      UI setup with data_description for every field; connection settings in
+      data, everything else in options.
+  config-flow-test-coverage:
+    status: done
+    comment: 100 % line and branch coverage of config_flow.py (tests/test_config_flow.py).
+  dependency-transparency:
+    status: done
+    comment: >
+      puresnmp==2.0.1 (MIT) is built and published to PyPI by a GitHub
+      Actions job on the v2.0.1 tag (exhuma/puresnmp, pythonpackage.yml).
+      The XML API client is part of this repository.
   docs-actions:
     status: exempt
-    comment: Integration does not expose custom actions.
+    comment: No service actions.
+  docs-conditions:
+    status: exempt
+    comment: No device conditions.
   docs-high-level-description: done
   docs-installation-instructions: done
   docs-removal-instructions: done
+  docs-triggers:
+    status: exempt
+    comment: No device triggers.
   entity-event-setup:
     status: exempt
-    comment: Integration is polling-based; no push/event entity setup.
-  entity-unique-id: done
+    comment: Entities subscribe to nothing; all data comes from the coordinators.
+  entity-unique-id:
+    status: done
+    comment: >
+      "{config entry id}_{object}" — not host or IP, which change (migrated
+      from "{host}_{port}_{object}" in config entry version 2).
   has-entity-name: done
   runtime-data: done
-  test-before-setup: done
-  unique-config-entry: done
+  test-before-configure:
+    status: done
+    comment: The config flow tests the XML API (and SNMP when enabled) before creating the entry.
+  test-before-setup:
+    status: done
+    comment: >
+      Setup fetches the admin settings: unreachable → ConfigEntryNotReady,
+      rejected credentials → ConfigEntryAuthFailed, API access denied (532/534)
+      → ConfigEntryNotReady plus a repair issue.
+  unique-config-entry:
+    status: done
+    comment: unique_id "{host}:{port}"; checked by the user and reconfigure flows.
 
   # ── Silver ────────────────────────────────────────────────────────────────
   action-exceptions:
-    status: exempt
-    comment: No custom actions registered.
-  config-entry-unloading: done
+    status: done
+    comment: >
+      Switch and button actions raise translated HomeAssistantError
+      (write_failed, backup_failed) for API errors and timeouts.
+  config-entry-unloading:
+    status: done
+    comment: >
+      Platforms unloaded; the dedicated XML session is closed, also after a
+      failed or cancelled setup and when Home Assistant stops.
   docs-configuration-parameters: done
   docs-installation-parameters: done
-  entity-unavailable: done
+  entity-unavailable:
+    status: done
+    comment: >
+      Per endpoint: an entity is unavailable when the fetch that feeds it
+      failed; a failed SNMP read never becomes a made-up 0.
   integration-owner: done
-  log-when-unavailable: done
-  parallel-updates: done
+  log-when-unavailable:
+    status: done
+    comment: >
+      An unreachable source is logged once by the coordinator, a failing
+      endpoint once when it starts and once when it recovers.
+  parallel-updates:
+    status: done
+    comment: 0 for the coordinator-fed sensors, 1 for switch and button (one write at a time).
   reauthentication-flow: done
   test-coverage:
     status: done
     comment: >
-      test_config_flow.py (19 tests), test_coordinator.py (19 tests),
-      test_entities.py (45 tests), test_sophos_client.py (12 tests),
-      test_snmp_client.py (24 tests). All platforms and error paths covered.
+      At least 95 % line coverage in every module, enforced in CI
+      (scripts/check_coverage_per_module.py on the HA 2026.8 job).
 
   # ── Gold ──────────────────────────────────────────────────────────────────
   devices: done
-  diagnostics: done
+  diagnostics:
+    status: done
+    comment: >
+      Endpoint states and parsed data; credentials, community, host, serial
+      number and static DHCP leases redacted.
   discovery:
     status: exempt
     comment: >
-      Sophos Firewall is a manually configured local appliance. It does not
-      advertise itself via mDNS, SSDP, DHCP, or any other discovery mechanism
-      supported by Home Assistant.
+      SFOS announces itself through none of the mechanisms Home Assistant
+      discovers (zeroconf, SSDP, …); as the network's gateway its LAN
+      address is static, so it never appears as a DHCP client either.
   discovery-update-info:
     status: exempt
-    comment: See discovery exemption above.
+    comment: No discovery (see above).
   docs-data-update: done
   docs-examples: done
   docs-known-limitations: done
@@ -73,58 +131,66 @@ rules:
   docs-supported-functions: done
   docs-troubleshooting: done
   docs-use-cases: done
-  entity-category: done
-  entity-device-class: done
-  entity-disabled-by-default:
+  dynamic-devices:
     status: exempt
+    comment: One device per config entry (the firewall); its objects are entities, not devices.
+  entity-category:
+    status: done
     comment: >
-      All provided entities are meaningful for typical firewall monitoring use
-      cases. Hardware-only sensors (temperature, fans) are gated by VM
-      detection and never created on virtual appliances.
+      Versions, temperatures, fans, PSUs, last boot, HA status and peer,
+      backup frequency, per-service and per-license sensors → diagnostic;
+      backup button and switches → config.
+  entity-device-class:
+    status: done
+    comment: >
+      Timestamp (last boot), data rate / data size (traffic), temperature,
+      connectivity, power, running, ENUM for every state list.
+  entity-disabled-by-default:
+    status: done
+    comment: >
+      Rarely used entities start disabled: swap, FTP/SMTP/IMAP/POP3 counters,
+      versions, fans, HA peer, backup frequency, read-only rule sensors, CPU
+      cores, per-service and per-license sensors, byte counters, traffic of
+      interfaces the XML API does not list.
   entity-translations: done
   exception-translations:
     status: done
-    comment: >
-      ConfigEntryNotReady, ConfigEntryAuthFailed, and UpdateFailed all use
-      translation_domain=DOMAIN and translation_key with corresponding entries
-      in strings.json / translations/*.json under the "exceptions" key.
+    comment: Every raised HomeAssistantError, UpdateFailed and ConfigEntryAuthFailed is translated.
   icon-translations:
-    status: exempt
-    comment: Icons are set via _attr_icon on entity classes; no state-based icon changes.
-  reconfigure-flow: done
+    status: done
+    comment: icons.json with state icons; no icon is set in code.
+  reconfiguration-flow:
+    status: done
+    comment: Host, port and credentials; refuses an address another entry already uses.
   repair-issues:
-    status: exempt
+    status: done
     comment: >
-      All recoverable error states (auth failure, SNMP timeout) are handled
-      transparently by the coordinator retry logic and reauth flow without
-      requiring user-visible repair issues.
+      api_access_denied (532/534, until access works) and snmp_unreachable
+      (agent silent for 10 minutes since setup, warning); cleared on recovery,
+      when SNMP is switched off and when the entry is disabled or removed.
   stale-devices:
     status: exempt
     comment: >
-      The integration manages a single device (the firewall itself). Dynamic
-      entities (interfaces, VPN tunnels, firewall rules, DHCP servers) reflect
-      current firewall configuration; stale entities are removed via
-      entity_registry.async_remove() in the coordinator listener whenever a
-      previously-seen item disappears from coordinator data.
+      One device per config entry, removed with the entry. Stale entities
+      (vanished interfaces, rules, tunnels, …) are removed from the registry.
 
-  # ── Platinum ─────────────────────────────────────────────────────────────
+  # ── Platinum ──────────────────────────────────────────────────────────────
   async-dependency:
-    status: todo
+    status: done
     comment: >
-      puresnmp 2.x is async-capable but uses blocking plugin discovery on
-      import. A custom preload() workaround patches the loader at startup.
-      A fully async SNMP library would remove this complexity.
+      puresnmp is asyncio-based; the XML client uses aiohttp. puresnmp's
+      plugin discovery imports modules, so it runs once in the import
+      executor during setup (SNMPClient.preload), never in the event loop.
   inject-websession:
-    status: exempt
+    status: done
     comment: >
-      The XML API client uses its own aiohttp.ClientSession with a bounded
-      TCPConnector (limit=2) because the Sophos firewall drops idle Keep-Alive
-      connections. Sharing HA's session would reintroduce the stale-socket
-      errors this architecture was designed to prevent.
+      The XML client takes its session as an argument. The integration
+      passes a dedicated session whose connector never reuses a connection:
+      SFOS hangs on reused keep-alive connections, and Home Assistant's shared
+      session pools them (reproduced in tests/test_sophos_client.py).
   strict-typing:
     status: done
     comment: >
-      SophosData TypedDict defines the coordinator data contract. The
-      coordinator class is parametrised as DataUpdateCoordinator[SophosData].
-      Remaining Any annotations are limited to raw API response dicts whose
-      structure is validated at runtime (XML element-to-dict conversion).
+      mypy --strict without disabled error codes, run in CI against the
+      minimum Home Assistant (.github/workflows/typing.yml); typed dataclass
+      models for all data.

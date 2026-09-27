@@ -1,313 +1,364 @@
-"""Tests for coordinator.py — tiered polling and data merging."""
+"""Coordinators: tier scheduling, per-source and per-endpoint availability."""
 from __future__ import annotations
 
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from collections.abc import Generator
+from datetime import timedelta
+from unittest.mock import patch
 
-import time
-from copy import deepcopy
-from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
+from freezegun.api import FrozenDateTimeFactory
+from homeassistant.config_entries import SOURCE_REAUTH
+from homeassistant.const import STATE_UNAVAILABLE
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from custom_components.sophos_firewall.coordinator import SophosCoordinator
-from custom_components.sophos_firewall.const import (
-    DATA_INTERFACES, DATA_SNMP_STATS, DATA_SNMP_SERVICES,
-)
-from tests.conftest import _COORDINATOR_DATA
+from custom_components.sophos_firewall.const import Tier
+from custom_components.sophos_firewall.coordinator import TierScheduler
 
+from .conftest import make_entry, setup_entry
+from .fake_snmp import SOPHOS, FakeSnmpAgent, Integer, sophos_mib
+from .fake_sophos import FakeSophosApi
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def make_coordinator(mock_entry, snmp_enabled=True) -> SophosCoordinator:
-    """Build a coordinator with minimal mocked clients."""
-    hass = MagicMock()
-    hass.loop = MagicMock()
-
-    xml_client = MagicMock()
-    xml_client.get_interfaces          = AsyncMock(return_value=[{"Name": "PortA", "InterfaceStatus": "ON"}])
-    xml_client.get_zones               = AsyncMock(return_value=[])
-    xml_client.get_firewall_rules      = AsyncMock(return_value=[])
-    xml_client.get_web_filter_policies = AsyncMock(return_value=[])
-    xml_client.get_dhcp_servers        = AsyncMock(return_value=[])
-    xml_client.get_backup              = AsyncMock(return_value={})
-    xml_client.get_admin_settings      = AsyncMock(return_value={})
-    xml_client.close                   = AsyncMock()
-    xml_client._session                = None
-
-    snmp_client = None
-    if snmp_enabled:
-        snmp_client = MagicMock()
-        snmp_client.get_device_info  = AsyncMock(return_value=deepcopy(_COORDINATOR_DATA)["snmp_device"])
-        snmp_client.get_stats        = AsyncMock(return_value=deepcopy(_COORDINATOR_DATA)["snmp_stats"])
-        snmp_client.get_services     = AsyncMock(return_value=deepcopy(_COORDINATOR_DATA)["snmp_services"])
-        snmp_client.get_licenses     = AsyncMock(return_value=deepcopy(_COORDINATOR_DATA)["snmp_licenses"])
-        snmp_client.get_vpn_tunnels  = AsyncMock(return_value=deepcopy(_COORDINATOR_DATA)["snmp_tunnels"])
-        snmp_client.get_system_health= AsyncMock(return_value=deepcopy(_COORDINATOR_DATA)["snmp_health"])
-        snmp_client.get_ha_status    = AsyncMock(return_value=deepcopy(_COORDINATOR_DATA)["snmp_ha"])
-
-    mock_entry.data["snmp_enabled"] = snmp_enabled
-    return SophosCoordinator(hass, mock_entry, xml_client, snmp_client)
+IFACE = "binary_sensor.5heynexg_iface_porta"
+RULE = "binary_sensor.5heynexg_fwrule_allow_lan_to_iot"
+MEMORY = "sensor.5heynexg_sensor_memory_percent"
+HTTP_HITS = "sensor.5heynexg_sensor_http_hits"
+VPN = "binary_sensor.5heynexg_vpn_1"
 
 
-# ── _fetch_xml ────────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_fetch_xml_realtime_returns_interfaces(mock_entry):
-    """_fetch_xml with realtime=True fetches interfaces."""
-    coord = make_coordinator(mock_entry, snmp_enabled=False)
-    data = await coord._fetch_xml(realtime=True, operative=False, static=False, once=False)
-    assert DATA_INTERFACES in data
-    assert data[DATA_INTERFACES][0]["Name"] == "PortA"
+@pytest.fixture(autouse=True)
+def no_auth_retry_delay() -> Generator[None]:
+    with patch("custom_components.sophos_firewall.coordinator.AUTH_RETRY_DELAY", 0):
+        yield
 
 
-@pytest.mark.asyncio
-async def test_fetch_xml_skips_non_due_tiers(mock_entry):
-    """_fetch_xml skips tiers that are not due (returns None/empty)."""
-    coord = make_coordinator(mock_entry, snmp_enabled=False)
-    # No tiers due except once (for zones/admin)
-    data = await coord._fetch_xml(realtime=False, operative=False, static=False, once=True)
-    # Interfaces not fetched — returns None (no previous data)
-    assert data[DATA_INTERFACES] is None or data[DATA_INTERFACES] == []
+async def _tick(hass: HomeAssistant, freezer: FrozenDateTimeFactory, seconds: float) -> None:
+    from pytest_homeassistant_custom_component.common import async_fire_time_changed
+
+    freezer.tick(timedelta(seconds=seconds))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done(wait_background_tasks=True)
 
 
-# ── _fetch_snmp ───────────────────────────────────────────────────────────────
+async def _refresh_snmp(hass: HomeAssistant, entry, *keys: str) -> None:
+    """Re-poll SNMP endpoints now.
 
-@pytest.mark.asyncio
-async def test_fetch_snmp_realtime_returns_stats(mock_entry):
-    """_fetch_snmp with realtime=True fetches stats."""
-    coord = make_coordinator(mock_entry, snmp_enabled=True)
-    data = await coord._fetch_snmp(realtime=True, fast=False, operative=False, static=False, once=False)
-    assert DATA_SNMP_STATS in data
-    assert data[DATA_SNMP_STATS]["memory_percent"] == 33
-
-
-@pytest.mark.asyncio
-async def test_fetch_snmp_skips_health_on_vm(mock_entry):
-    """_fetch_snmp skips health polling when _is_virtual=True."""
-    coord = make_coordinator(mock_entry, snmp_enabled=True)
-    coord._is_virtual = True
-    data = await coord._fetch_snmp(realtime=False, fast=False, operative=True, static=False, once=False)
-    # health client method should NOT have been called
-    coord._snmp_client.get_system_health.assert_not_called()
-
-
-# ── VM detection ──────────────────────────────────────────────────────────────
-
-def test_detect_virtual_appliance_sets_flag(mock_entry):
-    """_detect_virtual_appliance sets _is_virtual=True when temps are None."""
-    coord = make_coordinator(mock_entry, snmp_enabled=True)
-    assert coord._is_virtual is None
-    snmp_data = {"snmp_health": {"cpu_temperature_c": None, "fans": {}, "psus": {}}}
-    coord._detect_virtual_appliance(snmp_data)
-    assert coord._is_virtual is True
-
-
-def test_detect_physical_appliance(mock_entry):
-    """_detect_virtual_appliance sets _is_virtual=False when temps are present."""
-    coord = make_coordinator(mock_entry, snmp_enabled=True)
-    snmp_data = {"snmp_health": {"cpu_temperature_c": 45.0, "fans": {"fan_1": 2000}, "psus": {}}}
-    coord._detect_virtual_appliance(snmp_data)
-    assert coord._is_virtual is False
-
-
-def test_detect_virtual_only_runs_once(mock_entry):
-    """_detect_virtual_appliance is idempotent after first detection."""
-    coord = make_coordinator(mock_entry, snmp_enabled=True)
-    coord._is_virtual = True  # already set
-    # Even with physical data, should not change
-    snmp_data = {"snmp_health": {"cpu_temperature_c": 45.0, "fans": {"fan_1": 2000}, "psus": {}}}
-    coord._detect_virtual_appliance(snmp_data)
-    assert coord._is_virtual is True  # unchanged
-
-
-# ── Timing ────────────────────────────────────────────────────────────────────
-
-def test_due_returns_true_when_interval_elapsed(mock_entry):
-    """_due() returns True when the interval has elapsed."""
-    coord = make_coordinator(mock_entry, snmp_enabled=False)
-    old_time = time.monotonic() - 100  # 100s ago
-    assert coord._due(old_time, 30) is True
-
-
-def test_due_returns_false_when_recent(mock_entry):
-    """_due() returns False when the interval has not elapsed."""
-    coord = make_coordinator(mock_entry, snmp_enabled=False)
-    recent = time.monotonic()
-    assert coord._due(recent, 30) is False
-
-
-# ── Error handling ────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_snmp_failure_is_non_fatal(mock_entry):
-    """SNMP exceptions do not cause UpdateFailed — XML data still returned."""
-    coord = make_coordinator(mock_entry, snmp_enabled=True)
-    coord._snmp_client.get_stats         = AsyncMock(side_effect=Exception("SNMP timeout"))
-    coord._snmp_client.get_services      = AsyncMock(side_effect=Exception("SNMP timeout"))
-    coord._snmp_client.get_device_info   = AsyncMock(side_effect=Exception("SNMP timeout"))
-    coord._snmp_client.get_licenses      = AsyncMock(side_effect=Exception("SNMP timeout"))
-    coord._snmp_client.get_vpn_tunnels   = AsyncMock(side_effect=Exception("SNMP timeout"))
-    coord._snmp_client.get_system_health = AsyncMock(side_effect=Exception("SNMP timeout"))
-    coord._snmp_client.get_ha_status     = AsyncMock(side_effect=Exception("SNMP timeout"))
-
-    data = await coord._async_update_data()
-    assert DATA_INTERFACES in data  # XML data present
-
-
-@pytest.mark.asyncio
-async def test_xml_auth_error_raises(mock_entry):
-    """SophosAuthError triggers ConfigEntryAuthFailed."""
-    from homeassistant.exceptions import ConfigEntryAuthFailed
-    from custom_components.sophos_firewall.sophos_client import SophosAuthError
-
-    coord = make_coordinator(mock_entry, snmp_enabled=False)
-    coord.xml_client.get_interfaces = AsyncMock(side_effect=SophosAuthError("bad creds"))
-
-    with pytest.raises(ConfigEntryAuthFailed):
-        await coord._async_update_data()
-
-
-@pytest.mark.asyncio
-async def test_xml_api_error_raises_update_failed(mock_entry):
-    """SophosAPIError triggers UpdateFailed."""
-    from homeassistant.helpers.update_coordinator import UpdateFailed
-    from custom_components.sophos_firewall.sophos_client import SophosAPIError
-
-    coord = make_coordinator(mock_entry, snmp_enabled=False)
-    coord.xml_client.get_interfaces = AsyncMock(side_effect=SophosAPIError("timeout"))
-
-    with pytest.raises(UpdateFailed):
-        await coord._async_update_data()
-
-
-@pytest.mark.asyncio
-async def test_tier_timestamps_reset_after_relogin(mock_entry):
-    """After a successful re-login, tiers that did NOT run this cycle are
-    reset to 0 so they run unconditionally on the very next cycle.
-
-    The tier that triggered the auth error (realtime, here) is correctly
-    left at "now" — it already fetched fresh data on the successful retry,
-    so it does not need forcing on the next cycle. Only the *other* tiers,
-    which were skipped this cycle, get reset.
+    SNMP timeouts are real UDP timeouts on the event loop clock, which the
+    freezer would stop — so SNMP failure tests refresh explicitly instead.
     """
-    import time as _time
-    from custom_components.sophos_firewall.sophos_client import SophosAuthError
-
-    coord = make_coordinator(mock_entry, snmp_enabled=False)
-
-    # realtime must be "due" (timestamp in the past) so _fetch_xml() actually
-    # calls get_interfaces() and the simulated SophosAuthError fires.
-    coord._last_realtime  = 0.0
-    # fast/operative/static are deliberately "just ran" (timestamp == now) —
-    # i.e. NOT due this cycle — to prove the reset changes them rather than
-    # them coincidentally already being 0 before the update.
-    before = _time.monotonic()
-    coord._last_fast      = before
-    coord._last_operative = before
-    coord._last_static    = before
-    coord._once_done      = True
-
-    # First call raises auth error; second call (re-login retry) succeeds
-    call_count = {"n": 0}
-    async def _sometimes_fail():
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            raise SophosAuthError("session expired")
-        return [{"Name": "PortA", "InterfaceStatus": "ON"}]
-
-    coord.xml_client.get_interfaces = _sometimes_fail
-
-    await coord._async_update_data()
-
-    # realtime ran successfully on the retry — correctly stamped with "now",
-    # not reset to 0 (it doesn't need forcing, it already has fresh data).
-    assert coord._last_realtime  > before
-    # fast/operative/static did NOT run this cycle — reset to 0 so they are
-    # unconditionally due on the next cycle, regardless of their interval.
-    assert coord._last_fast      == 0.0
-    assert coord._last_operative == 0.0
-    assert coord._last_static    == 0.0
-    assert coord._once_done      is False
+    snmp = entry.runtime_data.snmp
+    snmp.invalidate(*keys)
+    await snmp.async_refresh()
+    await hass.async_block_till_done()
 
 
-@pytest.mark.asyncio
-async def test_snmp_partial_tier_failure_leaves_other_tiers_intact(mock_entry):
-    """A timeout in SNMP realtime does not wipe fast/operative/static data."""
-    import asyncio
-
-    coord = make_coordinator(mock_entry, snmp_enabled=True)
-    # Realtime fails; other tiers succeed normally
-    coord._snmp_client.get_stats    = AsyncMock(side_effect=asyncio.TimeoutError())
-    coord._snmp_client.get_services = AsyncMock(side_effect=asyncio.TimeoutError())
-
-    data = await coord._fetch_snmp(
-        realtime=True, fast=True, operative=False, static=False, once=True
-    )
-    # Realtime data absent (or None/empty due to failure)
-    assert data.get(DATA_SNMP_STATS) in (None, {})
-    # Fast-tier VPN tunnels still fetched successfully
-    from custom_components.sophos_firewall.const import DATA_SNMP_TUNNELS
-    assert data[DATA_SNMP_TUNNELS] is not None
+def _state(hass: HomeAssistant, entity_id: str) -> str:
+    state = hass.states.get(entity_id)
+    assert state is not None, entity_id
+    return state.state
 
 
-@pytest.mark.asyncio
-async def test_snmp_single_oid_failure_does_not_affect_sibling(mock_entry):
-    """Within a tier, one failing OID does not prevent the sibling from being returned."""
-    import asyncio
-    from custom_components.sophos_firewall.const import DATA_SNMP_SERVICES
-
-    coord = make_coordinator(mock_entry, snmp_enabled=True)
-    # stats fails, services succeeds
-    coord._snmp_client.get_stats    = AsyncMock(side_effect=asyncio.TimeoutError())
-    coord._snmp_client.get_services = AsyncMock(return_value={"dns": 3, "av": 3})
-
-    data = await coord._fetch_snmp(
-        realtime=True, fast=False, operative=False, static=False, once=False
-    )
-    assert data.get(DATA_SNMP_STATS) in (None, {})
-    assert data[DATA_SNMP_SERVICES] == {"dns": 3, "av": 3}
+# ── TierScheduler (pure) ──────────────────────────────────────────────────────
 
 
-# ── Session lifecycle ─────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_async_close_calls_xml_client(mock_entry):
-    """async_close() calls close() on the xml_client."""
-    coord = make_coordinator(mock_entry, snmp_enabled=False)
-    await coord.async_close()
-    coord.xml_client.close.assert_awaited_once()
+INTERVALS = {Tier.REALTIME: 30, Tier.FAST: 120, Tier.OPERATIVE: 600, Tier.STATIC: 1800}
 
 
-# ── Hardening: interval clamping prevents busy-loop ───────────────────────────
+def test_never_fetched_is_due_even_right_after_host_boot() -> None:
+    """Regression (A3): a 0.0 sentinel hid operative/static data after a reboot.
 
-def test_zero_realtime_interval_is_clamped(mock_entry):
-    """A zero realtime interval must be clamped to the default, otherwise
-    update_interval=timedelta(0) busy-loops and hammers the firewall."""
-    from custom_components.sophos_firewall.const import DEFAULT_INTERVAL_REALTIME
-    mock_entry.options = {"interval_realtime": 0}
-    coord = make_coordinator(mock_entry, snmp_enabled=False)
-    assert coord._iv_realtime == DEFAULT_INTERVAL_REALTIME
-    assert coord.update_interval.total_seconds() >= 5
-
-
-def test_negative_realtime_interval_is_clamped(mock_entry):
-    """A negative realtime interval is clamped to the default."""
-    from custom_components.sophos_firewall.const import DEFAULT_INTERVAL_REALTIME
-    mock_entry.options = {"interval_realtime": -10}
-    coord = make_coordinator(mock_entry, snmp_enabled=False)
-    assert coord._iv_realtime == DEFAULT_INTERVAL_REALTIME
+    time.monotonic() counts from host boot; at 180 s uptime v1.0.x computed
+    180 - 0.0 < 600 and skipped the firewall rules for ten minutes.
+    """
+    scheduler = TierScheduler(INTERVALS, 30)
+    for tier in Tier:
+        assert scheduler.is_due("x", tier, now=180.0)
 
 
-def test_non_int_realtime_interval_is_clamped(mock_entry):
-    """A non-integer realtime interval (corrupt storage) is clamped."""
-    from custom_components.sophos_firewall.const import DEFAULT_INTERVAL_REALTIME
-    mock_entry.options = {"interval_realtime": "not a number"}
-    coord = make_coordinator(mock_entry, snmp_enabled=False)
-    assert coord._iv_realtime == DEFAULT_INTERVAL_REALTIME
+def test_realtime_is_due_despite_scheduling_jitter() -> None:
+    """Regression (A2): HA's scheduling makes the gap a hair under 30 s."""
+    scheduler = TierScheduler(INTERVALS, 30)
+    scheduler.mark_fetched("iface", 1000.0)
+    assert scheduler.is_due("iface", Tier.REALTIME, now=1029.99)
 
 
-def test_valid_realtime_interval_is_preserved(mock_entry):
-    """A valid realtime interval is used unchanged."""
-    mock_entry.options = {"interval_realtime": 45}
-    coord = make_coordinator(mock_entry, snmp_enabled=False)
-    assert coord._iv_realtime == 45
+def test_slower_tiers_wait_for_their_interval() -> None:
+    scheduler = TierScheduler(INTERVALS, 30)
+    scheduler.mark_fetched("rules", 1000.0)
+    assert not scheduler.is_due("rules", Tier.OPERATIVE, now=1000 + 570)
+    assert scheduler.is_due("rules", Tier.OPERATIVE, now=1000 + 599.9)
+
+
+def test_invalidate_makes_endpoint_due() -> None:
+    scheduler = TierScheduler(INTERVALS, 30)
+    scheduler.mark_fetched("rules", 1000.0)
+    scheduler.invalidate("rules")
+    assert scheduler.is_due("rules", Tier.OPERATIVE, now=1001.0)
+
+
+# ── Scheduling through the real coordinator ───────────────────────────────────
+
+
+async def test_tiers_poll_at_their_intervals(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi
+) -> None:
+    await setup_entry(hass, make_entry(snmp_enabled=False))
+    assert xml_api.count("get", "Interface") == 1
+    assert xml_api.count("get", "FirewallRule") == 1
+
+    for _ in range(19):  # 19 × 30 s = 570 s
+        await _tick(hass, freezer, 30)
+    assert xml_api.count("get", "Interface") == 20  # every run — no skipped cycles
+    assert xml_api.count("get", "FirewallRule") == 1
+
+    await _tick(hass, freezer, 30)  # 600 s
+    assert xml_api.count("get", "FirewallRule") == 2
+    assert xml_api.count("get", "DHCPServer") == 1
+
+
+async def test_disabled_endpoint_is_not_polled(
+    hass: HomeAssistant, xml_api: FakeSophosApi
+) -> None:
+    await setup_entry(hass, make_entry(options={"poll_xml_fw_rules": False}, snmp_enabled=False))
+    assert xml_api.count("get", "FirewallRule") == 0
+    assert xml_api.count("get", "BackupRestore") == 0  # off by default
+
+
+# ── XML failures ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.usefixtures("entity_registry_enabled_by_default")
+async def test_failing_endpoint_affects_only_its_entities(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi, caplog
+) -> None:
+    await setup_entry(hass, make_entry(snmp_enabled=False))
+    xml_api.broken_tags.add("Interface")
+    await _tick(hass, freezer, 30)
+    assert _state(hass, IFACE) == STATE_UNAVAILABLE
+    assert _state(hass, RULE) == "on"
+
+    await _tick(hass, freezer, 30)
+    assert caplog.text.count("fetching interfaces failed") == 1  # logged once, not per cycle
+
+    xml_api.broken_tags.clear()
+    await _tick(hass, freezer, 30)
+    assert _state(hass, IFACE) == "on"
+    assert "interfaces is available again" in caplog.text
+
+
+@pytest.mark.usefixtures("entity_registry_enabled_by_default")
+async def test_unreachable_firewall_makes_xml_entities_unavailable(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    xml_api.exc = TimeoutError()
+    await _tick(hass, freezer, 30)
+    assert _state(hass, IFACE) == STATE_UNAVAILABLE
+    assert _state(hass, RULE) == STATE_UNAVAILABLE
+    assert isinstance(entry.runtime_data.xml.last_exception, UpdateFailed)
+    # SNMP is a separate source and keeps working
+    assert _state(hass, MEMORY) == "33"
+
+    xml_api.exc = None
+    await _tick(hass, freezer, 30)
+    assert _state(hass, IFACE) == "on"
+    assert _state(hass, RULE) == "on"
+
+
+async def test_transient_auth_failure_is_retried(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi
+) -> None:
+    await setup_entry(hass, make_entry(snmp_enabled=False))
+    xml_api.auth_failures_left = 1
+    await _tick(hass, freezer, 30)
+    assert _state(hass, IFACE) == "on"
+    assert not hass.config_entries.flow.async_progress()
+
+
+async def test_rejected_credentials_during_operation_start_reauth(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi
+) -> None:
+    await setup_entry(hass, make_entry(snmp_enabled=False))
+    xml_api.password = "rotated"
+    await _tick(hass, freezer, 30)
+    flows = hass.config_entries.flow.async_progress()
+    assert [f["context"]["source"] for f in flows] == [SOURCE_REAUTH]
+
+
+async def test_api_access_denied_is_reported(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi
+) -> None:
+    entry = make_entry(snmp_enabled=False)
+    await setup_entry(hass, entry)
+    xml_api.access_code = "534"
+    await _tick(hass, freezer, 30)
+    exc = entry.runtime_data.xml.last_exception
+    assert isinstance(exc, UpdateFailed)
+    assert exc.translation_key == "api_access_denied"
+    assert _state(hass, IFACE) == STATE_UNAVAILABLE
+
+
+# ── SNMP failures ─────────────────────────────────────────────────────────────
+
+
+async def test_snmp_outage_shows_unavailable_not_zero(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """Regression (A1): v1.0.x showed 0 % memory and reset the hit counters."""
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    assert _state(hass, HTTP_HITS) == "21355078"
+
+    snmp_agent.drop_all = True
+    await _refresh_snmp(hass, entry, "stats", "services")
+    assert _state(hass, MEMORY) == STATE_UNAVAILABLE
+    assert _state(hass, HTTP_HITS) == STATE_UNAVAILABLE
+    assert _state(hass, IFACE) == "on"  # XML unaffected
+    assert entry.runtime_data.snmp.data.stats.http_hits == 21355078  # retained, not zeroed
+
+    snmp_agent.drop_all = False
+    await _refresh_snmp(hass, entry, "stats")
+    assert _state(hass, HTTP_HITS) == "21355078"
+
+
+async def test_snmp_value_missing_on_agent_is_unknown(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    snmp_agent.remove_prefix(f"{SOPHOS}.2.5.2.0")
+    await setup_entry(hass, make_entry())
+    assert _state(hass, MEMORY) == "unknown"
+
+
+async def test_failed_vpn_walk_keeps_entities(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """A failed walk must not remove tunnel entities from the registry."""
+    from homeassistant.helpers import entity_registry as er
+
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    assert _state(hass, VPN) == "on"
+    snmp_agent.answer_limit = 0
+    await _refresh_snmp(hass, entry, "tunnels")
+    assert er.async_get(hass).async_get(VPN) is not None
+    assert _state(hass, VPN) == STATE_UNAVAILABLE
+
+
+# ── Virtual appliance detection ───────────────────────────────────────────────
+
+
+async def test_virtual_appliance_stops_health_polling(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    snmp = entry.runtime_data.snmp
+    for _ in range(2):  # the first two empty answers could be a booting appliance
+        assert snmp.is_virtual is None
+        assert snmp.endpoint_enabled("health")
+        await _refresh_snmp(hass, entry, "health")
+    assert snmp.is_virtual is True
+    assert not snmp.endpoint_enabled("health")
+
+
+async def test_booting_hardware_appliance_is_not_marked_virtual(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """Review finding: a hardware appliance that answered once without sensor
+    values (still booting) lost its fan/PSU/temperature monitoring until the
+    next restart."""
+    entry = make_entry()
+    await setup_entry(hass, entry)  # the agent reports no hardware sensors yet
+    await _refresh_snmp(hass, entry, "health")
+    snmp = entry.runtime_data.snmp
+    assert snmp.is_virtual is None
+    assert snmp.endpoint_enabled("health")
+
+    for oid, value in sophos_mib(hardware=True).items():  # boot finished
+        snmp_agent.set(oid, value)
+    await _refresh_snmp(hass, entry, "health")
+    assert snmp.is_virtual is False
+    assert _state(hass, "sensor.5heynexg_sensor_cpu_temperature") == "42.0"
+
+
+async def test_hardware_appliance_keeps_health_polling(
+    hass: HomeAssistant, xml_api: FakeSophosApi, hardware_agent: FakeSnmpAgent
+) -> None:
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    assert entry.runtime_data.snmp.is_virtual is False
+    assert entry.runtime_data.snmp.endpoint_enabled("health")
+
+
+async def test_failed_first_health_fetch_does_not_mark_virtual(
+    hass: HomeAssistant, xml_api: FakeSophosApi, hardware_agent: FakeSnmpAgent
+) -> None:
+    """Regression (A1): one timeout at startup disabled health polling for good."""
+    hardware_agent.drop_all = True
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    assert entry.runtime_data.snmp.is_virtual is None
+
+    hardware_agent.drop_all = False
+    await _refresh_snmp(hass, entry)
+    assert entry.runtime_data.snmp.is_virtual is False
+    assert _state(hass, "sensor.5heynexg_sensor_cpu_temperature") == "42.0"
+
+
+async def test_hit_counter_reset_on_agent_is_passed_through(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """A genuine counter reset (firewall reboot) is still reported as such."""
+    await setup_entry(hass, make_entry())
+    snmp_agent.set(f"{SOPHOS}.2.7.0", Integer(5))
+    await _tick(hass, freezer, 30)
+    assert _state(hass, HTTP_HITS) == "5"
+
+
+async def test_outage_recovery_is_not_logged_per_endpoint(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi, caplog
+) -> None:
+    """A whole-source outage is logged once by HA — not once per endpoint."""
+    await setup_entry(hass, make_entry(snmp_enabled=False))
+    xml_api.exc = TimeoutError()
+    await _tick(hass, freezer, 30)
+    xml_api.exc = None
+    await _tick(hass, freezer, 30)
+    assert "fetching interfaces failed" not in caplog.text
+    assert "is available again" not in caplog.text
+    assert "Timeout talking to" in caplog.text  # detail in HA's single error line
+
+
+async def test_realtime_poll_survives_scheduling_jitter(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi
+) -> None:
+    """Regression (A2) end-to-end: a run slightly early still fetches realtime data."""
+    await setup_entry(hass, make_entry(snmp_enabled=False))
+    for _ in range(5):
+        await _tick(hass, freezer, 29.99)
+    assert xml_api.count("get", "Interface") == 6
+
+
+async def test_failing_snmp_endpoint_affects_only_its_entities(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    snmp_agent.drop_prefixes = {f"{SOPHOS}.6"}  # VPN table only
+    await _refresh_snmp(hass, entry, "tunnels", "stats")
+    assert _state(hass, VPN) == STATE_UNAVAILABLE
+    assert _state(hass, MEMORY) == "33"
+    assert entry.runtime_data.snmp.last_update_success
+
+
+async def test_first_refresh_without_any_data_retries_setup(
+    hass: HomeAssistant, xml_api: FakeSophosApi
+) -> None:
+    """Every endpoint answering with an API error must not load an empty entry."""
+    from homeassistant.config_entries import ConfigEntryState
+
+    xml_api.broken_tags = {"Interface", "FirewallRule", "DHCPServer", "WebFilterPolicy", "AdminSettings"}
+    entry = make_entry(snmp_enabled=False)
+    await setup_entry(hass, entry)
+    assert entry.state is ConfigEntryState.SETUP_RETRY

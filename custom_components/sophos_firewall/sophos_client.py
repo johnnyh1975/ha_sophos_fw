@@ -1,470 +1,453 @@
-"""Async wrapper around the Sophos Firewall XML API.
+"""Async client for the Sophos Firewall XML API.
 
-The Sophos XML API is a synchronous HTTP POST endpoint that accepts XML
-request payloads and returns XML responses.  We use aiohttp directly
-(no third-party SDK dependency) so the event loop is never blocked.
+The XML API is a single HTTPS POST endpoint that takes an XML request and
+returns an XML response. The client parses responses into the typed models
+of ``models.py`` — callers never see raw XML.
 
 Connection strategy
 -------------------
-The Sophos XML API cannot handle many simultaneous TCP connections.
-Production logs showed consistent ~10s timeouts when 7 requests were fired
-in parallel via asyncio.gather() — always a different endpoint, proving it
-is a connection-backlog issue on the firewall side, not a slow endpoint.
+The client uses an aiohttp session injected by the caller
+(``inject-websession``). Two firewall-specific constraints apply:
 
-We address this with two complementary measures:
+* **One request at a time.** The firewall answers XML requests strictly one
+  after another (5-10 s each, measured). A second request in flight only
+  waits on the firewall while its own timeout runs — that is how requests
+  timed out. A semaphore in the client enforces the limit for every caller
+  (XML_MAX_CONCURRENT_REQUESTS).
+* **No connection reuse.** A request sent on a reused keep-alive connection
+  hangs or fails on the firewall. The integration therefore injects a
+  session whose connector never pools (see session.py); every request also
+  sends ``Connection: close``.
 
-1. **Persistent TCPConnector** (limit_per_host=2):
-   A single aiohttp session with a bounded TCPConnector is created once and
-   reused across all poll cycles. ``force_close=True`` closes the connection
-   after each request (required because the Sophos firewall drops idle
-   connections). Each request therefore pays a new TCP handshake (~5ms on LAN)
-   but avoids "Server disconnected" errors from stale Keep-Alive sockets.
+Error model
+-----------
+``SophosError`` is the base class. Callers distinguish:
 
-2. **Semaphore in the coordinator** (max 2 concurrent):
-   Even with Keep-Alive, we never send more than 2 requests simultaneously,
-   so the firewall's connection queue is never overwhelmed.
-
-All public methods return plain Python dicts or lists of dicts.
-Callers never see raw XML.
+* ``SophosConnectionError`` — network failure or timeout (transient).
+* ``SophosAuthError``       — credentials rejected (reauth can fix it).
+* ``SophosAccessError``     — API disabled or client IP not allowed
+                               (codes 532/534; only the firewall admin can fix it).
+* ``SophosAPIError``        — any other API-level failure.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+from collections.abc import Iterable, Mapping
 from typing import Any
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape as _xml_escape
 
 import aiohttp
 
-from .const import DEFAULT_TIMEOUT, XML_TAG_FIREWALL_RULE
+from .const import (
+    DEFAULT_TIMEOUT,
+    XML_API_PATH,
+    XML_MAX_CONCURRENT_REQUESTS,
+    XML_TAG_ADMIN,
+    XML_TAG_BACKUP,
+    XML_TAG_DHCP_SERVER,
+    XML_TAG_FIREWALL_RULE,
+    XML_TAG_INTERFACE,
+    XML_TAG_WEB_FILTER,
+)
+from .models import (
+    AdminSettings,
+    BackupSettings,
+    DhcpServer,
+    FirewallRule,
+    Interface,
+    WebFilterPolicy,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-_API_PATH = "/webconsole/APIController"
-
-# Maximum simultaneous TCP connections to the Sophos firewall.
-# With lazy loading the background refresh runs after TLS is established
-# (via the connectivity-check request in async_setup_entry). Two concurrent
-# Keep-Alive requests on the same socket are reliable; the previous timeouts
-# were caused by 7 parallel cold TLS handshakes, not by 2 warm requests.
-_MAX_CONNECTIONS = 2
+_SUCCESS_CODES = frozenset({"200", "201", "202", ""})
+_ACCESS_DENIED_CODES = frozenset({"532", "534"})
+_AUTH_FAILED_CODES = frozenset({"535"})
 
 
-class SophosAuthError(Exception):
-    """Raised when the firewall rejects credentials or denies API access.
+class SophosError(Exception):
+    """Base class for all errors raised by the XML client."""
 
-    Triggered by:
-    - Login/status text containing "fail"/"invalid" (wrong credentials)
-    - HTTP 403 (API access permission denied)
-    - Response-level Status code 532 (API not enabled), 534 (IP not in
-      API access list), or 535 (authentication/authorization failure)
+
+class SophosConnectionError(SophosError):
+    """The firewall could not be reached or did not answer in time."""
+
+
+class SophosAuthError(SophosError):
+    """The firewall rejected the credentials."""
+
+
+class SophosAccessError(SophosError):
+    """API access is denied by firewall configuration.
+
+    Code 532: the XML API is not enabled. Code 534: the client IP is not in
+    the API access list. HTTP 403 is treated the same way. New credentials
+    cannot fix this — the firewall administrator has to change the setting.
     """
 
+    def __init__(self, message: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
-class SophosAPIError(Exception):
-    """Raised for any non-auth API failure."""
+
+class SophosAPIError(SophosError):
+    """Any other API-level failure."""
+
+
+# ── XML → dict helpers ────────────────────────────────────────────────────────
+
+
+def _elem_to_dict(element: ET.Element) -> dict[str, Any]:
+    """Recursively convert an XML element to a nested dict.
+
+    Repeated sibling tags become lists.
+    """
+    result: dict[str, Any] = {}
+    for child in element:
+        value: Any = _elem_to_dict(child) if len(child) else (child.text or "")
+        if child.tag in result:
+            if not isinstance(result[child.tag], list):
+                result[child.tag] = [result[child.tag]]
+            result[child.tag].append(value)
+        else:
+            result[child.tag] = value
+    return result
+
+
+def _text(record: Mapping[str, Any], key: str) -> str | None:
+    """Return a leaf value as stripped str, or None if missing or not a leaf.
+
+    The XML→dict conversion yields a dict when an element unexpectedly has
+    children; such values are treated as missing instead of crashing callers.
+    """
+    value = record.get(key)
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return None
+
+
+def _path(record: Mapping[str, Any], *keys: str) -> Mapping[str, Any]:
+    """Descend into nested dicts, returning {} for anything unexpected."""
+    current: Any = record
+    for key in keys:
+        current = current.get(key) if isinstance(current, Mapping) else None
+    return current if isinstance(current, Mapping) else {}
+
+
+def _equals(value: str | None, expected: str) -> bool | None:
+    """Case-insensitive comparison that keeps 'unknown' as None."""
+    if value is None:
+        return None
+    return value.lower() == expected.lower()
+
+
+# ── Record parsers ────────────────────────────────────────────────────────────
+
+
+def parse_interface(record: Mapping[str, Any]) -> Interface | None:
+    """Parse one <Interface> record."""
+    if (name := _text(record, "Name")) is None:
+        return None
+    return Interface(
+        name=name,
+        is_up=_equals(_text(record, "InterfaceStatus"), "on"),
+        hardware=_text(record, "Hardware"),
+        zone=_text(record, "NetworkZone"),
+        ipv4_assignment=_text(record, "IPv4Assignment"),
+        speed=_text(record, "InterfaceSpeed"),
+        mtu=_text(record, "MTU"),
+    )
+
+
+def parse_firewall_rule(record: Mapping[str, Any]) -> FirewallRule | None:
+    """Parse one <FirewallRule> record."""
+    if (name := _text(record, "Name")) is None:
+        return None
+    return FirewallRule(
+        name=name,
+        enabled=_equals(_text(record, "Status"), "enable"),
+        # SFOS 22 nests the action in the policy-type block.
+        action=_text(record, "Action")
+        or _text(_path(record, "NetworkPolicy"), "Action")
+        or _text(_path(record, "UserPolicy"), "Action"),
+        policy_type=_text(record, "PolicyType"),
+        ip_family=_text(record, "IPFamily"),
+    )
+
+
+def parse_web_filter_policy(record: Mapping[str, Any]) -> WebFilterPolicy | None:
+    """Parse one <WebFilterPolicy> record."""
+    if (name := _text(record, "Name")) is None:
+        return None
+    return WebFilterPolicy(name=name, default_action=_text(record, "DefaultAction"))
+
+
+def parse_dhcp_server(record: Mapping[str, Any]) -> DhcpServer | None:
+    """Parse one <DHCPServer> record including its static leases."""
+    if (name := _text(record, "Name")) is None:
+        return None
+    raw = record.get("StaticLease", [])
+    raw_leases = [raw] if isinstance(raw, Mapping) else raw if isinstance(raw, list) else []
+    leases: list[dict[str, str]] = []
+    for lease in raw_leases:
+        if not isinstance(lease, Mapping):
+            continue
+        normalised = {k: v for k, v in lease.items() if isinstance(v, str)}
+        if "MACAddress" in normalised:
+            normalised["MACAddress"] = normalised["MACAddress"].lower()
+        leases.append(normalised)
+    status = _text(record, "Status")
+    return DhcpServer(
+        name=name,
+        running=None if status is None else status == "1",
+        interface=_text(record, "Interface"),
+        lease_time=_text(record, "LeaseTime"),
+        static_leases=tuple(leases),
+    )
+
+
+def parse_backup(record: Mapping[str, Any]) -> BackupSettings:
+    """Parse the <BackupRestore> record."""
+    schedule = _path(record, "ScheduleBackup")
+    return BackupSettings(
+        mode=_text(schedule, "BackupMode"),
+        frequency=_text(schedule, "BackupFrequency"),
+    )
+
+
+def parse_admin(record: Mapping[str, Any]) -> AdminSettings:
+    """Parse the <AdminSettings> record."""
+    return AdminSettings(hostname=_text(_path(record, "HostnameSettings"), "HostName"))
+
+
+# ── Client ────────────────────────────────────────────────────────────────────
 
 
 class SophosClient:
-    """Thin async client for the Sophos Firewall XML API.
-
-    Maintains a persistent aiohttp session with a bounded TCPConnector so
-    that TCP+TLS connections are reused across poll cycles and the number of
-    simultaneous connections to the firewall is capped.
-
-    Usage::
-
-        client = SophosClient(host, port, user, password)
-        await client.open()
-        try:
-            interfaces = await client.get_interfaces()
-        finally:
-            await client.close()
-
-    Or as a context manager::
-
-        async with SophosClient(host, port, user, password) as client:
-            interfaces = await client.get_interfaces()
-    """
+    """Thin async client for the Sophos Firewall XML API."""
 
     def __init__(
         self,
+        session: aiohttp.ClientSession,
         host: str,
         port: int,
         username: str,
         password: str,
-        verify_ssl: bool = True,
-        timeout: int = DEFAULT_TIMEOUT,
+        timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
+        self._session = session
         self._host = host
         self._port = port
         self._username = username
         self._password = password
-        self._url = f"https://{host}:{port}{_API_PATH}"
+        self._url = f"https://{host}:{port}{XML_API_PATH}"
         self._timeout = aiohttp.ClientTimeout(total=timeout)
-        self._ssl: bool | None = None if verify_ssl else False
-        self._session: aiohttp.ClientSession | None = None
-        self._connector: aiohttp.TCPConnector | None = None
-
-    # ── Session lifecycle ─────────────────────────────────────────────────────
-
-    async def open(self) -> None:
-        """Create the persistent session with a bounded connection pool.
-
-        Called once by the coordinator on setup. The session and connector
-        are reused across all poll cycles. force_close=True means each
-        request uses a new TCP connection — required to avoid stale-socket
-        errors from the firewall dropping idle Keep-Alive connections.
-        """
-        self._connector = aiohttp.TCPConnector(
-            limit=_MAX_CONNECTIONS,
-            limit_per_host=_MAX_CONNECTIONS,
-            # force_close=True: close the connection after each request.
-            # The Sophos firewall drops idle Keep-Alive connections after
-            # a short timeout (observed: "Server disconnected" errors on the
-            # second poll cycle). force_close avoids using stale connections
-            # at the cost of a new TCP handshake per request (~5ms on LAN).
-            force_close=True,
-            enable_cleanup_closed=True,
-            ssl=self._ssl,
-        )
-        self._session = aiohttp.ClientSession(
-            connector=self._connector,
-            timeout=self._timeout,
-            connector_owner=True,  # session owns connector — closed together
-        )
-        _LOGGER.debug(
-            "SophosClient session opened for %s (max %d connections)",
-            self._host, _MAX_CONNECTIONS,
-        )
-
-    async def close(self) -> None:
-        """Close the session and underlying connector, releasing all sockets.
-
-        Tolerant of errors during close — a failure here must never prevent
-        the config entry from unloading cleanly. The session reference is
-        cleared regardless so a subsequent open() starts fresh.
-        """
-        if self._session is not None:
-            try:
-                await self._session.close()
-            except Exception as exc:  # noqa: BLE001 — close failures are non-fatal
-                _LOGGER.debug("Error closing SophosClient session for %s: %s", self._host, exc)
-            finally:
-                self._session = None
-                self._connector = None
-                _LOGGER.debug("SophosClient session closed for %s", self._host)
-
-    async def __aenter__(self) -> "SophosClient":
-        await self.open()
-        return self
-
-    async def __aexit__(self, *_: Any) -> None:
-        await self.close()
-
-    async def _ensure_session(self) -> aiohttp.ClientSession:
-        """Return the active session, creating one lazily if needed."""
-        if self._session is None:
-            await self.open()
-        return self._session  # type: ignore[return-value]
+        self._semaphore = asyncio.Semaphore(XML_MAX_CONCURRENT_REQUESTS)
 
     # ── Low-level request ─────────────────────────────────────────────────────
 
     def _login_block(self) -> str:
-        """Return the XML Login block with escaped credentials.
-
-        Centralises credential escaping — all XML payloads use this
-        instead of inline f-strings with self._username/_password.
-        """
+        """Return the XML Login block with escaped credentials."""
         return (
-            f"<Login>"
+            "<Login>"
             f"<Username>{_xml_escape(self._username)}</Username>"
             f"<Password>{_xml_escape(self._password)}</Password>"
-            f"</Login>"
+            "</Login>"
         )
 
-    def _build_request(self, operation: str, tag: str, body: str = "") -> str:
-        """Wrap an API operation in the standard Sophos XML envelope."""
-        return (
-            f"<Request>"
-            f"{self._login_block()}"
-            f"<{operation}><{tag}{body}/></{operation}>"
-            f"</Request>"
-        )
+    def _request(self, body: str = "") -> str:
+        """Wrap an operation in the standard request envelope."""
+        return f"<Request>{self._login_block()}{body}</Request>"
 
-    async def _post(self, xml: str) -> ET.Element:
-        """POST raw XML and return the parsed <Response> element.
+    async def _post(self, xml: str, label: str = "request") -> ET.Element:
+        """POST an XML request and return the parsed <Response> element.
 
-        The ssl parameter is configured on the connector, so individual
-        requests do not need to pass it again.
-
-        Raises:
-            SophosAuthError: On status code 535 (wrong credentials).
-            SophosAPIError:  On any other non-success status or network error.
+        Logs at debug level how long the request waited for its turn
+        (XML_MAX_CONCURRENT_REQUESTS) and how long the firewall took.
         """
-        session = await self._ensure_session()
+        queued = time.monotonic()
+        started: float | None = None
+        outcome = "failed"
         try:
-            async with session.post(
-                self._url,
-                data={"reqxml": xml},
-            ) as resp:
-                if resp.status == 403:
-                    raise SophosAuthError(f"HTTP 403 Forbidden from {self._host} — check API access permissions")
-                if resp.status not in (200, 201):
-                    raise SophosAPIError(
-                        f"Unexpected HTTP {resp.status} from {self._host}:{self._port}"
-                    )
-                text = await resp.text()
-        except aiohttp.ClientConnectorError as exc:
-            raise SophosAPIError(f"Cannot connect to {self._host}:{self._port}: {exc}") from exc
+            async with self._semaphore:
+                started = time.monotonic()
+                async with self._session.post(
+                    self._url,
+                    data={"reqxml": xml},
+                    headers={"Connection": "close"},
+                    timeout=self._timeout,
+                ) as resp:
+                    if resp.status == 403:
+                        raise SophosAccessError(
+                            f"HTTP 403 from {self._host}: API access forbidden", code="403"
+                        )
+                    if resp.status not in (200, 201):
+                        raise SophosAPIError(
+                            f"Unexpected HTTP {resp.status} from {self._host}:{self._port}"
+                        )
+                    text = await resp.text()
+                    outcome = f"{len(text)} bytes"
+        except TimeoutError as exc:
+            # aiohttp raises the builtin TimeoutError (not a ClientError) when
+            # the total timeout expires — it must not escape as a raw exception.
+            raise SophosConnectionError(
+                f"Timeout talking to {self._host}:{self._port}"
+            ) from exc
         except aiohttp.ClientError as exc:
-            raise SophosAPIError(f"HTTP error: {exc}") from exc
+            raise SophosConnectionError(
+                f"Cannot talk to {self._host}:{self._port}: {exc}"
+            ) from exc
+        finally:
+            done = time.monotonic()
+            _LOGGER.debug(
+                "XML %s on %s: waited %.2f s for a slot, request %.2f s (%s)",
+                label, self._host, (started or done) - queued,
+                done - started if started is not None else 0.0, outcome,
+            )
 
         try:
             root = ET.fromstring(text)
         except ET.ParseError as exc:
             raise SophosAPIError(f"Invalid XML response: {exc}") from exc
 
-        # Check top-level login status
         login_el = root.find("Login/status")
         if login_el is not None:
             status_text = (login_el.text or "").lower()
             if "fail" in status_text or "invalid" in status_text:
                 raise SophosAuthError(f"Authentication failed: {login_el.text}")
 
-        # Check response-level Status element. Sophos reports certain request
-        # rejections here (not in Login/status):
-        #   532 = API access not enabled on the firewall
-        #   534 = client IP not in the API Access List
-        #   535 = authentication/authorization failure
-        # These otherwise slip through as an empty/zero-record response.
+        # Response-level status (direct child only — nested record-level
+        # <Status> elements are handled per record).
         status_el = root.find("Status")
         if status_el is not None:
             code = status_el.get("code", "")
-            if code in ("532", "534", "535"):
-                # 535 is auth-class; 532/534 are access-policy errors. Both
-                # mean the request will never succeed until the admin fixes
-                # firewall config, so surface them as auth errors to trigger
-                # the reauth/repair path rather than silent empty data.
-                raise SophosAuthError(
-                    f"API access denied (code {code}): {status_el.text or ''}".strip()
-                )
-            if code and code not in ("200", "201"):
-                raise SophosAPIError(
-                    f"API request failed (code {code}): {status_el.text or ''}".strip()
-                )
-
+            message = f"(code {code}) {status_el.text or ''}".strip()
+            if code in _ACCESS_DENIED_CODES:
+                raise SophosAccessError(f"API access denied {message}", code=code)
+            if code in _AUTH_FAILED_CODES:
+                raise SophosAuthError(f"Authentication failed {message}")
+            if code not in _SUCCESS_CODES:
+                raise SophosAPIError(f"API request failed {message}")
         return root
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _elem_to_dict(element: ET.Element) -> dict[str, Any]:
-        """Recursively convert an XML element to a nested dict."""
-        result: dict[str, Any] = {}
-        for child in element:
-            tag = child.tag
-            if len(child):
-                value: Any = SophosClient._elem_to_dict(child)
-            else:
-                value = child.text or ""
-            if tag in result:
-                # Multiple sibling elements with the same tag → list
-                if not isinstance(result[tag], list):
-                    result[tag] = [result[tag]]
-                result[tag].append(value)
-            else:
-                result[tag] = value
-        return result
-
-    async def _get_tag(self, tag: str) -> list[dict[str, Any]]:
-        """Fetch all records for a given XML tag.
-
-        Returns an empty list when the firewall reports zero records.
-        """
-        xml = self._build_request("Get", tag)
-        root = await self._post(xml)
-
+    async def _get_records(self, tag: str) -> list[dict[str, Any]]:
+        """Fetch all records for an XML tag, skipping per-record errors."""
+        root = await self._post(self._request(f"<Get><{tag}/></Get>"), label=f"Get {tag}")
         records: list[dict[str, Any]] = []
         for elem in root.iter(tag):
-            # Skip status-only elements (e.g. <Interface><Status code="529"/></Interface>).
-            # A status code other than success on an individual element means
-            # that one record is unavailable — skip just that element rather
-            # than discarding every record fetched in the same response.
             status_el = elem.find("Status")
-            if status_el is not None and status_el.get("code"):
-                code = status_el.get("code", "")
-                if code not in ("200", "201", ""):
-                    _LOGGER.debug(
-                        "Tag %s element returned status %s — skipping this record",
-                        tag, code,
-                    )
-                    continue
-            d = self._elem_to_dict(elem)
-            if d:
-                records.append(d)
+            if status_el is not None and status_el.get("code", "") not in _SUCCESS_CODES:
+                _LOGGER.debug(
+                    "%s record returned status %s — skipped", tag, status_el.get("code")
+                )
+                continue
+            if record := _elem_to_dict(elem):
+                records.append(record)
         return records
 
     # ── Connection test ───────────────────────────────────────────────────────
 
     async def test_connection(self) -> str:
-        """Verify credentials and connectivity.
-
-        Returns:
-            The API version string (e.g. "2200.1").
-
-        Raises:
-            SophosAuthError: On authentication failure.
-            SophosAPIError:  On connection or parse errors.
-        """
-        xml = (
-            f"<Request>"
-            f"{self._login_block()}"
-            f"</Request>"
-        )
-        root = await self._post(xml)
+        """Verify credentials and connectivity; return the API version."""
+        root = await self._post(self._request(), label="login")
         return root.get("APIVersion", "unknown")
 
     # ── Data fetch methods ────────────────────────────────────────────────────
 
-    async def get_interfaces(self) -> list[dict[str, Any]]:
-        """Return all network interfaces with status, zone, IP, and speed."""
-        return await self._get_tag("Interface")
+    async def get_interfaces(self) -> dict[str, Interface]:
+        """Return all interfaces keyed by name."""
+        return _by_name(parse_interface(r) for r in await self._get_records(XML_TAG_INTERFACE))
 
-    async def get_zones(self) -> list[dict[str, Any]]:
-        """Return all network zones with their enabled services."""
-        return await self._get_tag("Zone")
+    async def get_firewall_rules(self) -> dict[str, FirewallRule]:
+        """Return all firewall rules keyed by name."""
+        return _by_name(
+            parse_firewall_rule(r) for r in await self._get_records(XML_TAG_FIREWALL_RULE)
+        )
 
-    async def get_firewall_rules(self) -> list[dict[str, Any]]:
-        """Return all firewall rules with name, status (Enable/Disable), and action."""
-        return await self._get_tag(XML_TAG_FIREWALL_RULE)
+    async def get_web_filter_policies(self) -> dict[str, WebFilterPolicy]:
+        """Return all web filter policies keyed by name."""
+        return _by_name(
+            parse_web_filter_policy(r) for r in await self._get_records(XML_TAG_WEB_FILTER)
+        )
 
-    async def get_web_filter_policies(self) -> list[dict[str, Any]]:
-        """Return all web filter policies with DefaultAction (Allow/Deny)."""
-        return await self._get_tag("WebFilterPolicy")
+    async def get_dhcp_servers(self) -> dict[str, DhcpServer]:
+        """Return all DHCP servers keyed by name."""
+        return _by_name(
+            parse_dhcp_server(r) for r in await self._get_records(XML_TAG_DHCP_SERVER)
+        )
 
-    async def get_dhcp_servers(self) -> list[dict[str, Any]]:
-        """Return all DHCP server instances with status and static leases."""
-        return await self._get_tag("DHCPServer")
+    async def get_backup(self) -> BackupSettings:
+        """Return the scheduled-backup configuration."""
+        records = await self._get_records(XML_TAG_BACKUP)
+        return parse_backup(records[0] if records else {})
 
-    async def get_backup(self) -> dict[str, Any]:
-        """Return backup schedule configuration."""
-        records = await self._get_tag("BackupRestore")
-        return records[0] if records else {}
+    async def get_admin_settings(self) -> AdminSettings:
+        """Return administration settings (hostname)."""
+        records = await self._get_records(XML_TAG_ADMIN)
+        return parse_admin(records[0] if records else {})
 
-    async def get_admin_settings(self) -> dict[str, Any]:
-        """Return administration settings including hostname."""
-        records = await self._get_tag("AdminSettings")
-        return records[0] if records else {}
+    # ── Write methods ─────────────────────────────────────────────────────────
 
-    # ── Write methods (require write_access=True in config) ───────────────────
+    async def _set(self, tag: str, body: str, *, operation: str = "") -> None:
+        """Send a <Set> request and check the record-level status."""
+        attr = f' operation="{operation}"' if operation else ""
+        root = await self._post(
+            self._request(f"<Set{attr}><{tag}>{body}</{tag}></Set>"), label=f"Set {tag}"
+        )
+        status_el = root.find(f"{tag}/Status")
+        if status_el is not None and status_el.get("code", "") not in _SUCCESS_CODES:
+            raise SophosAPIError(
+                f"Set {tag} failed (code {status_el.get('code')}): {status_el.text or ''}".strip()
+            )
 
     async def set_firewall_rule_status(self, name: str, enable: bool) -> None:
-        """Enable or disable a firewall rule by name.
-
-        Args:
-            name:   Exact rule name as returned by get_firewall_rules().
-            enable: True to enable, False to disable.
-
-        Raises:
-            SophosAPIError: If the update fails.
-        """
+        """Enable or disable a firewall rule by name."""
         status = "Enable" if enable else "Disable"
-        xml = (
-            f"<Request>"
-            f"{self._login_block()}"
-            f"<Set>"
-            f"<FirewallRule>"
-            f"<Name>{_xml_escape(name)}</Name>"
-            f"<Status>{_xml_escape(status)}</Status>"
-            f"</FirewallRule>"
-            f"</Set>"
-            f"</Request>"
+        await self._set(
+            XML_TAG_FIREWALL_RULE,
+            f"<Name>{_xml_escape(name)}</Name><Status>{status}</Status>",
         )
-        root = await self._post(xml)
-        status_el = root.find("FirewallRule/Status")
-        if status_el is not None:
-            code = status_el.get("code", "200")
-            if code not in ("200", ""):
-                raise SophosAPIError(
-                    f"set_firewall_rule_status({name!r}) failed: {status_el.text}"
-                )
         _LOGGER.debug("FirewallRule %r → %s", name, status)
 
     async def set_web_filter_default_action(self, name: str, allow: bool) -> None:
-        """Toggle the DefaultAction of a web filter policy.
-
-        Args:
-            name:  Exact policy name.
-            allow: True for Allow, False for Deny.
-
-        Raises:
-            SophosAPIError: If the update fails.
-        """
+        """Set the DefaultAction of a web filter policy."""
         action = "Allow" if allow else "Deny"
-        xml = (
-            f"<Request>"
-            f"{self._login_block()}"
-            f"<Set>"
-            f"<WebFilterPolicy>"
-            f"<Name>{_xml_escape(name)}</Name>"
-            f"<DefaultAction>{_xml_escape(action)}</DefaultAction>"
-            f"</WebFilterPolicy>"
-            f"</Set>"
-            f"</Request>"
+        await self._set(
+            XML_TAG_WEB_FILTER,
+            f"<Name>{_xml_escape(name)}</Name><DefaultAction>{action}</DefaultAction>",
         )
-        root = await self._post(xml)
-        status_el = root.find("WebFilterPolicy/Status")
-        if status_el is not None:
-            code = status_el.get("code", "200")
-            if code not in ("200", ""):
-                raise SophosAPIError(
-                    f"set_web_filter_default_action({name!r}) failed: {status_el.text}"
-                )
-        _LOGGER.debug("WebFilterPolicy %r → DefaultAction %s", name, action)
+        _LOGGER.debug("WebFilterPolicy %r → %s", name, action)
 
     async def trigger_backup(self) -> None:
-        """Trigger an immediate backup without overwriting user-configured settings.
+        """Trigger an immediate backup without changing the user's settings.
 
-        Sophos has no dedicated "run now" endpoint. The trigger mechanism is to
-        write the existing BackupRestore config back unchanged — this signals the
-        firewall to run a backup cycle immediately without modifying BackupMode,
-        BackupFrequency, or any other user setting.
-
-        Raises:
-            SophosAPIError: If reading current config or writing back fails.
+        SFOS has no "run now" endpoint: writing the current BackupRestore
+        schedule back unchanged makes the firewall run a backup cycle.
         """
-        # Read current backup configuration
         current = await self.get_backup()
-        schedule = current.get("ScheduleBackup", {})
-        mode = schedule.get("BackupMode", "Mail")
-        frequency = schedule.get("BackupFrequency", "Never")
-
-        # Write the same values back to trigger an immediate backup cycle
-        xml = (
-            f"<Request>"
-            f"{self._login_block()}"
-            f"<Set operation=\"add\">"
-            f"<BackupRestore>"
-            f"<ScheduleBackup>"
+        mode = current.mode or "Mail"
+        frequency = current.frequency or "Never"
+        await self._set(
+            XML_TAG_BACKUP,
+            "<ScheduleBackup>"
             f"<BackupMode>{_xml_escape(mode)}</BackupMode>"
             f"<BackupFrequency>{_xml_escape(frequency)}</BackupFrequency>"
-            f"</ScheduleBackup>"
-            f"</BackupRestore>"
-            f"</Set>"
-            f"</Request>"
+            "</ScheduleBackup>",
+            operation="add",
         )
-        root = await self._post(xml)
-        # _post() already raises on response-level Status errors (532/534/535
-        # and other non-2xx codes). Additionally check the BackupRestore-specific
-        # status so a rejected backup (e.g. BackupMode=Mail with no mail server
-        # configured) surfaces as an error instead of a silent success.
-        status_el = root.find("BackupRestore/Status")
-        if status_el is not None:
-            code = status_el.get("code", "200")
-            if code not in ("200", "201", ""):
-                raise SophosAPIError(
-                    f"trigger_backup failed (code {code}): {status_el.text or ''}".strip()
-                )
-        _LOGGER.info("Sophos Firewall backup triggered (mode=%s, frequency=%s)", mode, frequency)
+        _LOGGER.info("Backup triggered on %s (mode=%s, frequency=%s)", self._host, mode, frequency)
 
+
+def _by_name[T: (Interface, FirewallRule, WebFilterPolicy, DhcpServer)](
+    items: Iterable[T | None],
+) -> dict[str, T]:
+    """Collect parsed records into a dict keyed by name, dropping None."""
+    result: dict[str, T] = {}
+    for item in items:
+        if item is not None and item.name not in result:
+            result[item.name] = item
+    return result

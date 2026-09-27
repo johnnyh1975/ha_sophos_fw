@@ -1,0 +1,17 @@
+# Pinned test/CI dependencies — newer tested Home Assistant (same as Roomba+).
+#
+# pytest-homeassistant-custom-component (PHCC) is Home Assistant's own test
+# harness, republished for custom integrations. Each PHCC release pins one
+# Home Assistant version plus the matching pytest, pytest-asyncio,
+# pytest-cov, freezegun, … — so this one line defines the whole test stack.
+#
+# Dependabot (weekly) proposes PHCC bumps, i.e. new Home Assistant versions,
+# as reviewable PRs. The *minimum* supported version is pinned separately in
+# .github/ci/requirements-test-min.txt, outside Dependabot's reach.
+#
+# Python: PHCC 0.13.357 / Home Assistant 2026.8 require Python >= 3.14.
+
+pytest-homeassistant-custom-component==0.13.357  # homeassistant==2026.8.3
+
+# The integration's runtime SNMP dependency (mirrors manifest.json).
+puresnmp==2.0.1

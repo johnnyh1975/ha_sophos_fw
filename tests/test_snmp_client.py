@@ -1,477 +1,377 @@
-"""Tests for snmp_client.py — puresnmp-based SNMP client.
+"""SNMPClient against a real UDP SNMP agent (tests/fake_snmp.py).
 
-All SNMP calls use puresnmp (not snmpwalk subprocess).
-The Client is mocked via unittest.mock to avoid real network calls.
+Every test drives the real puresnmp stack over a real socket — encoding,
+GETBULK walks, timeouts and error mapping are all exercised for real.
 """
 from __future__ import annotations
 
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import asyncio
+from datetime import timedelta
 
-import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
+from homeassistant.core import HomeAssistant
 
+from custom_components.sophos_firewall.models import (
+    DeviceInfo,
+    HaStatus,
+    SystemHealth,
+    SystemStats,
+    VpnTunnel,
+)
 from custom_components.sophos_firewall.snmp_client import (
     SNMPClient,
-    _py,
-    _safe_int,
-    _timeticks_to_seconds,
-    _safe_str,
+    SophosSNMPError,
+    table_column,
+    tenths_to_celsius,
+    timeticks_to_seconds,
+    to_int,
+    to_str,
+)
+
+from .fake_snmp import (
+    FAN_SPEED,
+    PSU_STATUS,
+    SOPHOS,
+    VPN_ENTRY,
+    FakeSnmpAgent,
+    Gauge,
+    Integer,
+    OctetString,
 )
 
 
-# ── Module-level conversion functions ────────────────────────────────────────
-
-def test_py_with_plain_int():
-    """_py passes through plain Python ints."""
-    assert _py(42) == 42
-
-
-def test_py_with_none():
-    assert _py(None) is None
+async def _client(hass: HomeAssistant, community: str = "public") -> SNMPClient:
+    client = SNMPClient("127.0.0.1", community=community)
+    await client.preload(hass)
+    return client
 
 
-def test_py_with_plain_string():
-    assert _py("hello") == "hello"
+# ── Value helpers ─────────────────────────────────────────────────────────────
 
 
-def test_safe_int_plain():
-    assert _safe_int(42) == 42
+def test_value_helpers_keep_missing_as_none() -> None:
+    """Missing values must stay None — never become a plausible 0 (v1.0.x bug)."""
+    assert to_int(None) is None
+    assert to_int("abc") is None
+    assert to_int(True) is None
+    assert to_int(Integer(7)) == 7
+    assert to_int("42 %") == 42
+    assert to_str(None) is None
+    assert to_str("  ") is None
+    assert to_str(b"x") == "x"
+    assert timeticks_to_seconds(None) is None
+    assert timeticks_to_seconds(timedelta(seconds=90)) == 90
+    assert timeticks_to_seconds(12345) == 123
+    assert tenths_to_celsius(None) is None
+    assert tenths_to_celsius(0) is None
+    assert tenths_to_celsius(425) == 42.5
 
 
-def test_safe_int_none():
-    assert _safe_int(None) == 0
+def test_table_column_reads_index_not_column() -> None:
+    table = "1.2.3"
+    data = {
+        "1.2.3.1.2.1": "a",
+        ".1.2.3.1.2.2": "b",       # leading dot tolerated
+        "1.2.3.1.2": "x",          # no index
+        "1.2.3.1.2.4.9": "x",      # two-part index
+        "1.2.3.1.3.1": "x",        # other column
+        "1.2.3.2.2.1": "x",        # other entry
+    }
+    assert table_column(data, table, "2") == {"1": "a", "2": "b"}
 
 
-def test_safe_int_default():
-    assert _safe_int(None, default=-1) == -1
+# ── Setup ─────────────────────────────────────────────────────────────────────
 
 
-def test_safe_str_plain():
-    assert _safe_str("hello") == "hello"
+def test_client_requires_preload() -> None:
+    with pytest.raises(RuntimeError, match="preload"):
+        SNMPClient("127.0.0.1", community="public")._get_client()
 
 
-def test_safe_str_none():
-    assert _safe_str(None) is None
+async def test_concurrent_preloads_patch_once(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    clients = [SNMPClient("127.0.0.1", community="public") for _ in range(3)]
+    await asyncio.gather(*(c.preload(hass) for c in clients))
+    from puresnmp.plugins import security
+
+    assert security._sophos_ha_patched is True
+    for client in clients:
+        assert await client.test_connection() == "5HeyneXG"
 
 
-def test_safe_str_empty():
-    assert _safe_str("") is None
+# ── Data ──────────────────────────────────────────────────────────────────────
 
 
-def test_timeticks_to_seconds_timedelta():
-    """timedelta from puresnmp TimeTicks.pythonize() → total_seconds()."""
-    td = datetime.timedelta(days=75, hours=6, minutes=19, seconds=3)
-    result = _timeticks_to_seconds(td)
-    assert result == int(td.total_seconds())
-
-
-def test_timeticks_to_seconds_int():
-    """Raw int (hundredths of seconds) → seconds."""
-    result = _timeticks_to_seconds(650274344)
-    assert result == 650274344 // 100
-
-
-def test_timeticks_to_seconds_none():
-    assert _timeticks_to_seconds(None) == 0
-
-
-# ── SNMPClient.is_available ───────────────────────────────────────────────────
-
-def test_is_available_reflects_puresnmp_import():
-    """is_available() returns True iff puresnmp can be imported.
-
-    This mirrors the real implementation rather than hard-coding True, so the
-    test passes whether or not puresnmp happens to be installed in the test
-    environment — it asserts the method's contract, not the environment.
-    """
-    try:
-        import puresnmp  # noqa: F401
-        expected = True
-    except ImportError:
-        expected = False
-    assert SNMPClient.is_available() is expected
-
-
-# ── SNMPClient construction ───────────────────────────────────────────────────
-
-def test_client_construction():
-    """SNMPClient can be constructed with host/community/version."""
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    assert client._host == "10.10.0.1"
-    assert client._community == "public"
-
-
-# ── preload ───────────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_preload_creates_client():
-    """preload() initializes the internal puresnmp Client.
-
-    The real preload() runs its blocking loader via asyncio.to_thread(), so we
-    patch that (not the obsolete get_event_loop path) and have it execute the
-    inner _load function, asserting the Client gets created as a side-effect.
-    """
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    assert client._client is None
-
-    async def _fake_to_thread(fn, *args, **kwargs):
-        # Simulate the executor running _load without real puresnmp/network:
-        # stand in for the Client instance the real _load would assign.
-        from unittest.mock import MagicMock
-        client._client = MagicMock()
-
-    with patch("asyncio.to_thread", side_effect=_fake_to_thread):
-        await client.preload()
-
-    assert client._client is not None
-
-
-# ── test_connection ───────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_connection_success():
-    """test_connection returns True when SNMP agent responds."""
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    client._client = MagicMock()
-
-    async def fake_get(oid):
-        return "5HeyneXG"
-
-    client._get = fake_get
-    result = await client.test_connection()
-    assert result is True
-
-
-@pytest.mark.asyncio
-async def test_connection_failure_on_exception():
-    """test_connection returns False when SNMP raises."""
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    client._client = MagicMock()
-
-    async def fake_get(oid):
-        return None  # no response
-
-    client._get = fake_get
-    result = await client.test_connection()
-    assert result is False
-
-
-# ── _get_client() guard against missing preload() ─────────────────────────────
-#
-# Regression coverage for the bug reported by taracraft: calling any fetch
-# method before preload() must raise RuntimeError from _get_client(), and
-# that RuntimeError must be logged at WARNING (not silently downgraded to
-# DEBUG alongside ordinary network timeouts) so the real cause is visible.
-
-def test_get_client_raises_runtime_error_without_preload():
-    """_get_client() raises RuntimeError when preload() was never called."""
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    assert client._client is None
-    with pytest.raises(RuntimeError, match="before preload"):
-        client._get_client()
-
-
-@pytest.mark.asyncio
-async def test_get_without_preload_returns_none_and_logs_warning(caplog):
-    """_get() on a non-preloaded client returns None (does not raise) but
-    must log at WARNING level, distinguishing it from ordinary timeouts."""
-    import logging
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-
-    with caplog.at_level(logging.WARNING, logger="custom_components.sophos_firewall.snmp_client"):
-        result = await client._get("1.3.6.1.4.1.2604.5.1.3.3.0")
-
-    assert result is None
-    assert any(
-        "before preload" in record.message and record.levelno == logging.WARNING
-        for record in caplog.records
+async def test_device_info(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    client = await _client(hass)
+    assert await client.get_device_info() == DeviceInfo(
+        name="5HeyneXG",
+        model="SFVH_KV01_SFOS",
+        firmware="SFOS 22.0.0 GA-Build411",
+        serial="C01001D2MQT76C4",
+        webcat_version="1.0.1.1207",
+        ips_version="22.1.26",
     )
 
 
-@pytest.mark.asyncio
-async def test_multiget_without_preload_returns_none_dict_and_logs_warning(caplog):
-    """_multiget() on a non-preloaded client logs at WARNING, not DEBUG."""
-    import logging
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    oids = ["1.3.6.1.4.1.2604.5.1.3.3.0", "1.3.6.1.4.1.2604.5.1.3.4.0"]
-
-    with caplog.at_level(logging.WARNING, logger="custom_components.sophos_firewall.snmp_client"):
-        result = await client._multiget(oids)
-
-    assert result == {o: None for o in oids}
-    assert any(record.levelno == logging.WARNING for record in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_walk_without_preload_returns_empty_dict_and_logs_warning(caplog):
-    """_walk() on a non-preloaded client logs at WARNING, not DEBUG."""
-    import logging
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-
-    with caplog.at_level(logging.WARNING, logger="custom_components.sophos_firewall.snmp_client"):
-        result = await client._walk("1.3.6.1.4.1.2604.5.1.3")
-
-    assert result == {}
-    assert any(record.levelno == logging.WARNING for record in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_get_ordinary_timeout_still_logs_at_debug_not_warning(caplog):
-    """A normal asyncio.TimeoutError (real network issue) stays at DEBUG —
-    only the preload() implementation bug is escalated to WARNING."""
-    import asyncio
-    import logging
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    client._client = MagicMock()
-    client._client.get = AsyncMock(side_effect=asyncio.TimeoutError())
-
-    with caplog.at_level(logging.DEBUG, logger="custom_components.sophos_firewall.snmp_client"):
-        result = await client._get("1.3.6.1.4.1.2604.5.1.3.3.0")
-
-    assert result is None
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert warnings == []
-
-
-# ── get_device_info ───────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_get_device_info_returns_strings():
-    """get_device_info converts OctetString values to plain strings."""
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    client._client = MagicMock()
-
-    def make_octet(value: bytes):
-        m = MagicMock()
-        m.pythonize.return_value = value
-        return m
-
-    async def fake_multiget(oids):
-        return {
-            oids[0]: make_octet(b"5HeyneXG"),
-            oids[1]: make_octet(b"SFVH_KV01_SFOS"),
-            oids[2]: make_octet(b"22.0.0 GA-Build411"),
-            oids[3]: make_octet(b"C01001D2MQT76C4"),
-        }
-
-    client._multiget = fake_multiget
-    info = await client.get_device_info()
-
-    # All values should be plain strings, no OctetString wrappers
-    for v in info.values():
-        assert isinstance(v, str), f"Expected str, got {type(v)}: {v!r}"
-
-    assert "5HeyneXG" in info.values()
-    assert "SFVH_KV01_SFOS" in info.values()
-
-
-# ── get_stats ─────────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_get_stats_returns_integers():
-    """get_stats converts Integer values to plain ints."""
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    client._client = MagicMock()
-
-    def make_int(value: int):
-        m = MagicMock()
-        m.pythonize.return_value = value
-        return m
-
-    def make_timeticks(td: datetime.timedelta):
-        m = MagicMock()
-        m.pythonize.return_value = td
-        return m
-
-    async def fake_multiget(oids):
-        return {oid: make_int(0) for oid in oids}
-
-    # Patch uptime OID to return timedelta
-    from custom_components.sophos_firewall.snmp_client import OID_UPTIME
-    async def fake_multiget_with_uptime(oids):
-        result = {oid: make_int(0) for oid in oids}
-        if OID_UPTIME in result:
-            result[OID_UPTIME] = make_timeticks(datetime.timedelta(days=75, hours=6))
-        return result
-
-    client._multiget = fake_multiget_with_uptime
+async def test_stats(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    client = await _client(hass)
     stats = await client.get_stats()
-
-    assert isinstance(stats["memory_percent"], int)
-    assert isinstance(stats["disk_percent"], int)
-    assert isinstance(stats["uptime_seconds"], int)
-    assert stats["uptime_seconds"] > 0  # timedelta converted correctly
-
-
-# ── get_services ──────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_get_services_returns_int_codes():
-    """get_services returns dict of service_key → int status code."""
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    client._client = MagicMock()
-
-    def make_int(value: int):
-        m = MagicMock()
-        m.pythonize.return_value = value
-        return m
-
-    async def fake_multiget(oids):
-        # All services running (3)
-        return {oid: make_int(3) for oid in oids}
-
-    client._multiget = fake_multiget
-    services = await client.get_services()
-
-    assert isinstance(services, dict)
-    for key, val in services.items():
-        assert isinstance(val, int), f"Service {key}: expected int, got {type(val)}"
-    assert all(v == 3 for v in services.values())
+    assert stats == SystemStats(
+        current_date="Sun Sep 27 09:00:00 2026",
+        uptime_seconds=6502743,
+        disk_capacity_mb=11969, disk_percent=27,
+        memory_capacity_mb=72383, memory_percent=33,
+        swap_capacity_mb=4095, swap_percent=23,
+        live_users=1, http_hits=21355078, ftp_hits=0,
+        smtp_hits=19, imap_hits=47, pop3_hits=12,
+    )
 
 
-# ── get_system_health ─────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_get_system_health_vm_returns_none_temps():
-    """On virtual appliances (SFVH), temperature OIDs return None."""
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    client._client = MagicMock()
-
-    async def fake_multiget(oids):
-        # Return empty — no temperature data
-        return {}
-
-    async def fake_walk(oid):
-        return {}
-
-    client._multiget = fake_multiget
-    client._walk = fake_walk
-
-    health = await client.get_system_health()
-    assert health["cpu_temperature_c"] is None
-    assert health["npu_temperature_c"] is None
-    assert health["fans"] == {}
+async def test_unimplemented_oid_is_none_not_zero(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    snmp_agent.remove_prefix(f"{SOPHOS}.2.7.0")  # HTTP hits
+    stats = await (await _client(hass)).get_stats()
+    assert stats.http_hits is None
+    assert stats.memory_percent == 33
 
 
-@pytest.mark.asyncio
-async def test_get_system_health_physical_returns_temps():
-    """On physical appliances, temperatures are floats."""
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    client._client = MagicMock()
-
-    from custom_components.sophos_firewall.snmp_client import OID_CPU_TEMPERATURE, OID_NPU_TEMPERATURE
-
-    def make_int(v):
-        m = MagicMock()
-        m.pythonize.return_value = v
-        return m
-
-    async def fake_multiget(oids):
-        result = {}
-        if OID_CPU_TEMPERATURE in oids:
-            result[OID_CPU_TEMPERATURE] = make_int(450)  # 45.0 °C
-        if OID_NPU_TEMPERATURE in oids:
-            result[OID_NPU_TEMPERATURE] = make_int(380)  # 38.0 °C
-        return result
-
-    async def fake_walk(oid):
-        return {}
-
-    client._multiget = fake_multiget
-    client._walk = fake_walk
-
-    health = await client.get_system_health()
-    assert health["cpu_temperature_c"] == 45.0
-    assert health["npu_temperature_c"] == 38.0
+async def test_services(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    services = await (await _client(hass)).get_services()
+    assert len(services) == 21
+    assert services["ips"] == 3
+    assert services["antispam"] == 1
+    assert services["tomcat"] is None  # not implemented by the agent
 
 
-# ── get_vpn_tunnels ───────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_get_vpn_tunnels_parses_table():
-    """get_vpn_tunnels assembles tunnel dicts from SNMP table walk."""
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    client._client = MagicMock()
-
-    BASE = "1.3.6.1.4.1.2604.5.1.6.1.2.1.1"
-
-    def make_val(v):
-        m = MagicMock()
-        if isinstance(v, bytes):
-            m.pythonize.return_value = v
-        else:
-            m.pythonize.return_value = v
-        return m
-
-    async def fake_walk(oid):
-        return {
-            f"{BASE}.2.1": make_val(b"Azure-VPN"),
-            f"{BASE}.9.1": make_val(1),
-            f"{BASE}.10.1": make_val(1),
-            f"{BASE}.2.2": make_val(b"Branch-VPN"),
-            f"{BASE}.9.2": make_val(0),
-            f"{BASE}.10.2": make_val(1),
-        }
-
-    client._walk = fake_walk
-    tunnels = await client.get_vpn_tunnels()
-
-    assert len(tunnels) == 2
-    azure = next(t for t in tunnels if t["name"] == "Azure-VPN")
-    branch = next(t for t in tunnels if t["name"] == "Branch-VPN")
-    assert azure["conn_status"] == 1
-    assert branch["conn_status"] == 0
+async def test_licenses(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    licenses = await (await _client(hass)).get_licenses()
+    assert len(licenses) == 9
+    assert licenses["base_fw"].status_code == 3
+    assert licenses["base_fw"].expiry_date == "Dec 31 2999"
+    assert licenses["enh_support"].status_code == 0
+    assert licenses["enh_support"].expiry_date is None
 
 
-@pytest.mark.asyncio
-async def test_get_vpn_tunnels_empty():
-    """get_vpn_tunnels returns empty list when no tunnels."""
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    client._client = MagicMock()
-
-    async def fake_walk(oid):
-        return {}
-
-    client._walk = fake_walk
-    tunnels = await client.get_vpn_tunnels()
-    assert tunnels == []
+async def test_vpn_tunnels_come_from_the_tunnel_table(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    """Regression #18: v1.0.2 walked the IPsec *policy* table."""
+    tunnels = await (await _client(hass)).get_vpn_tunnels()
+    assert tunnels == {
+        "1": VpnTunnel("1", "Azure-VPN", conn_status=1, activated=1, tunnels_configured=1),
+        "2": VpnTunnel("2", "Branch-VPN", conn_status=0, activated=1, tunnels_configured=1),
+        "3": VpnTunnel("3", "DR-Site", conn_status=2, activated=1, tunnels_configured=3),
+    }
+    assert "IKEv2-Policy" not in {t.name for t in tunnels.values()}
 
 
-# ── Hardening: malformed OIDs in health walk must not crash ───────────────────
+async def test_vpn_rows_without_name_are_skipped(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    snmp_agent.remove_prefix(f"{VPN_ENTRY}.2.2")
+    tunnels = await (await _client(hass)).get_vpn_tunnels()
+    assert set(tunnels) == {"1", "3"}
 
-@pytest.mark.asyncio
-async def test_get_system_health_malformed_oid_does_not_crash():
-    """A malformed/short OID in the fan/psu walk is skipped, not fatal.
 
-    Previously oid.rsplit('.', 2)[-2] would IndexError on an OID with too few
-    components, taking down the whole health fetch.
+async def test_vpn_walk_uses_getbulk(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    await (await _client(hass)).get_vpn_tunnels()
+    assert "getbulk" in snmp_agent.requests
+    assert "getnext" not in snmp_agent.requests
+
+
+async def test_long_tables_are_walked_completely(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    """Tables longer than one GETBULK answer must not be truncated.
+
+    puresnmp 2.0.1 drops rows when several columns are bulk-walked in one
+    call; the client walks each column on its own.
     """
-    client = SNMPClient(host="10.10.0.1", community="public", version="2c")
-    client._client = MagicMock()
+    for i in range(4, 80):
+        snmp_agent.set(f"{VPN_ENTRY}.2.{i}", OctetString(f"T{i}".encode()))
+        snmp_agent.set(f"{VPN_ENTRY}.9.{i}", Integer(1))
+    tunnels = await (await _client(hass)).get_vpn_tunnels()
+    assert len(tunnels) == 79
+    assert all(t.conn_status is not None for t in tunnels.values())
 
-    def make_int(v):
-        m = MagicMock()
-        m.pythonize.return_value = v
-        return m
 
-    async def fake_multiget(oids):
-        return {}
+async def test_health_on_virtual_appliance(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    health = await (await _client(hass)).get_system_health()
+    assert health == SystemHealth()
+    assert not health.has_hardware_sensors
 
-    async def fake_walk(oid):
-        # Mix a valid fan OID with a malformed one (no dots before the .2)
-        return {
-            "1.3.6.1.4.1.2604.5.1.9.3.1.2.1.2": make_int(3000),  # valid → fan_1
-            "2": make_int(9999),                                  # malformed, ends ".2"? no
-            ".2": make_int(8888),                                 # edge: rsplit → ['', '2']
-        }
 
-    client._multiget = fake_multiget
-    client._walk = fake_walk
+async def test_health_on_hardware_parses_mib_layout(hass: HomeAssistant, hardware_agent: FakeSnmpAgent) -> None:
+    """Regression (Befund 2): fan/PSU tables were keyed by column, not row."""
+    health = await (await _client(hass)).get_system_health()
+    assert health == SystemHealth(
+        cpu_temperature_c=42.0,
+        npu_temperature_c=65.0,
+        fans={"fan_1": 3000, "fan_2": 3150, "fan_3": 2900},
+        psus={"psu_1": True, "psu_2": False},
+    )
 
-    # Must not raise despite the malformed OIDs
-    health = await client.get_system_health()
-    # The valid fan is parsed; malformed entries are skipped without crashing
-    assert "fan_1" in health["fans"]
-    assert health["fans"]["fan_1"] == 3000
+
+async def test_health_ignores_foreign_columns(hass: HomeAssistant, hardware_agent: FakeSnmpAgent) -> None:
+    hardware_agent.set(f"{SOPHOS}.9.3.1.3.1", Gauge(1))       # other column
+    hardware_agent.set(f"{FAN_SPEED}.4.9", Gauge(9999))       # two-part index
+    hardware_agent.set(f"{PSU_STATUS}.3", Integer(7))         # unknown status → down
+    health = await (await _client(hass)).get_system_health()
+    assert health.fans == {"fan_1": 3000, "fan_2": 3150, "fan_3": 2900}
+    assert health.psus == {"psu_1": True, "psu_2": False, "psu_3": False}
+
+
+async def test_ha_status(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    assert await (await _client(hass)).get_ha_status() == HaStatus(
+        enabled=False, current_state=2, peer_state=0
+    )
+
+
+# ── Failures ──────────────────────────────────────────────────────────────────
+
+
+async def test_silent_agent_raises_instead_of_zeros(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    """Regression (A1): v1.0.x turned a timeout into 0 % memory, 0 hits, …"""
+    client = await _client(hass)
+    snmp_agent.drop_all = True
+    with pytest.raises(SophosSNMPError):
+        await client.get_stats()
+
+
+async def test_wrong_community_raises(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    client = await _client(hass, community="wrong")
+    with pytest.raises(SophosSNMPError):
+        await client.test_connection()
+
+
+async def test_walk_failing_half_way_raises(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
+    """A partial table would make rows vanish and their entities be deleted."""
+    for i in range(4, 60):
+        snmp_agent.set(f"{VPN_ENTRY}.2.{i}", Integer(i))
+    client = await _client(hass)
+    snmp_agent.answer_limit = 1
+    with pytest.raises(SophosSNMPError):
+        await client.get_vpn_tunnels()
+
+
+async def test_unexpected_errors_are_not_masked(hass: HomeAssistant, snmp_agent: FakeSnmpAgent, monkeypatch) -> None:
+    """Programming errors must surface, not be reported as 'agent unreachable'."""
+    client = await _client(hass)
+
+    async def broken(*args, **kwargs):
+        raise KeyError("bug")
+
+    monkeypatch.setattr(client._get_client(), "multiget", broken)
+    with pytest.raises(KeyError):
+        await client.get_stats()
+
+
+# ── UDP transport (replacement for puresnmp's send_udp) ───────────────────────
+
+
+async def test_cancelled_request_closes_its_socket(
+    hass: HomeAssistant, snmp_agent: FakeSnmpAgent, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """puresnmp's own sender leaked the socket when the request was cancelled."""
+    from custom_components.sophos_firewall import snmp_client as module
+
+    transports: list[asyncio.DatagramTransport] = []
+    original = module._UDPRequest.connection_made
+
+    def track(self, transport):
+        transports.append(transport)
+        original(self, transport)
+
+    monkeypatch.setattr(module._UDPRequest, "connection_made", track)
+    monkeypatch.setattr(module, "SNMP_OPERATION_BUDGET", 0.2)  # cancels mid-attempt
+    client = await _client(hass)
+    snmp_agent.drop_all = True
+    with pytest.raises(SophosSNMPError):
+        await client.get_stats()
+    assert transports
+    assert all(t.is_closing() for t in transports)
+
+
+async def test_icmp_port_unreachable_fails_fast(
+    hass: HomeAssistant, socket_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host without SNMP answers with ICMP port-unreachable → immediate error."""
+    import socket
+
+    from custom_components.sophos_firewall import snmp_client as module
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    closed_port = sock.getsockname()[1]
+    sock.close()
+    monkeypatch.setattr(module, "SNMP_TIMEOUT", 5)  # would take 5 s if not fast
+    client = SNMPClient("127.0.0.1", community="public", port=closed_port)
+    await client.preload(hass)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    with pytest.raises(SophosSNMPError):
+        await client.get_stats()
+    assert loop.time() - start < 1
+
+
+async def test_lost_packets_are_retried(
+    hass: HomeAssistant, snmp_agent: FakeSnmpAgent, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from custom_components.sophos_firewall import snmp_client as module
+
+    monkeypatch.setattr(module, "SNMP_RETRIES", 3)
+    monkeypatch.setattr(module, "SNMP_OPERATION_BUDGET", 5)
+    client = await _client(hass)
+    snmp_agent.drop_next = 2  # first two attempts lost, third answered
+    assert (await client.get_stats()).memory_percent == 33
+
+
+async def test_failed_walk_cancels_sibling_walks(
+    hass: HomeAssistant, snmp_agent: FakeSnmpAgent
+) -> None:
+    """One failing column must not leave the other column walks running."""
+    for i in range(4, 80):
+        snmp_agent.set(f"{VPN_ENTRY}.9.{i}", Integer(1))
+    client = await _client(hass)
+    snmp_agent.drop_prefixes = {f"{VPN_ENTRY}.2"}  # the name column never answers
+    with pytest.raises(SophosSNMPError):
+        await client.get_vpn_tunnels()
+    pending = [
+        t for t in asyncio.all_tasks()
+        if getattr(t.get_coro(), "__qualname__", "").endswith("_walk_columns.<locals>._walk")
+    ]
+    assert not pending
+
+
+async def test_startup_burst_against_a_serial_agent(
+    hass: HomeAssistant, snmp_agent: FakeSnmpAgent, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Field test 1.1 beta: every endpoint at once overloaded the SFOS agent.
+
+    The agent answers one request at a time. Without a concurrency limit the
+    tail of the burst waits longer than the per-attempt timeout and fails.
+    """
+    from custom_components.sophos_firewall import snmp_client as module
+
+    monkeypatch.setattr(module, "SNMP_OPERATION_BUDGET", 10)
+    snmp_agent.serial_delay = 0.2
+
+    async def burst() -> list[object]:
+        client = await _client(hass)
+        return await asyncio.gather(
+            client.get_stats(), client.get_services(), client.get_vpn_tunnels(),
+            client.get_ha_status(), client.get_system_health(), client.get_licenses(),
+            client.get_device_info(), return_exceptions=True,
+        )
+
+    monkeypatch.setattr(module, "SNMP_MAX_CONCURRENT", 12)  # first 1.1 beta
+    assert any(isinstance(r, SophosSNMPError) for r in await burst())
+    await asyncio.sleep(1.5)  # let the agent drain the retransmissions
+
+    monkeypatch.setattr(module, "SNMP_MAX_CONCURRENT", 2)
+    results = await burst()
+    assert not any(isinstance(r, Exception) for r in results), results
+
+
+async def test_placeholder_texts_are_missing_values(
+    hass: HomeAssistant, snmp_agent: FakeSnmpAgent
+) -> None:
+    """Field test: SFOS 22.0.2 reports the webcat version as 'Not Available'."""
+    snmp_agent.set(f"{SOPHOS}.1.5.0", OctetString(b"Not Available"))
+    snmp_agent.set(f"{SOPHOS}.5.8.2.0", OctetString(b"fail"))
+    client = await _client(hass)
+    assert (await client.get_device_info()).webcat_version is None
+    assert (await client.get_licenses())["enh_plus"].expiry_date is None

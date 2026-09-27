@@ -1,546 +1,648 @@
-"""DataUpdateCoordinator for the Sophos Firewall integration.
+"""Data update coordinators for the Sophos Firewall integration.
 
-Polling architecture — 5 Tiers
---------------------------------
-Each endpoint is assigned to a tier based on how often its data changes.
-Tier intervals and which endpoints to poll are fully configurable in the
-Options Flow and stored in config_entry.options.
+Architecture
+------------
+Two coordinators, one per data source:
 
-    Tier 1 REALTIME  (default 30s):
-        XML:  interfaces
-        SNMP: stats (RAM/disk/traffic), services
+* ``SophosXmlCoordinator``  — XML API (HTTPS)
+* ``SophosSnmpCoordinator`` — SNMP (UDP), only when SNMP is enabled
 
-    Tier 2 FAST      (default 2 min):
-        SNMP: vpn_tunnels, ha_status
+Each source has its own availability: an unreachable SNMP agent no longer
+takes the XML entities down, and vice versa.
 
-    Tier 3 OPERATIVE (default 10 min):
-        XML:  firewall_rules
-        SNMP: system_health
-        Note: write-ops (switch/button) trigger async_request_refresh()
-              immediately regardless of tier interval.
+Both coordinators share one mechanism, ``SophosCoordinator``: a declarative
+table of *endpoints* (one fetch each), a ``TierScheduler`` that decides which
+endpoints are due, and per-endpoint success tracking.
 
-    Tier 4 STATIC    (default 30 min):
-        XML:  dhcp_servers (incl. StaticLeases), web_filter_policies, backup
-        SNMP: licenses
+Polling tiers
+-------------
+The coordinator runs every *realtime* interval. On each run it fetches the
+endpoints whose tier is due:
 
-    Tier 5 ONCE      (only on first fetch, never re-polled):
-        XML:  zones, admin_settings
-        SNMP: device_info
+    REALTIME   (default 30 s)   XML interfaces        SNMP stats, services, CPU,
+                                                      interface traffic
+    FAST       (default 2 min)                        SNMP VPN tunnels, HA state
+    OPERATIVE  (default 10 min) XML firewall rules    SNMP hardware health
+    STATIC     (default 30 min) XML DHCP, web filter, SNMP licenses, device info
+                                backup, admin
 
-API call reduction vs. polling everything every 30s:
-    Before:  14 requests/30s  → 1,680/h
-    After:   ~6 requests/30s avg → ~560/h  (67% reduction)
+Availability semantics
+----------------------
+* An endpoint whose last fetch failed is *unavailable*; entities fed by it
+  report unavailable instead of stale or fabricated values.
+* A failed endpoint is retried on the next run, not only after its tier
+  interval.
+* If *every* due endpoint fails with a connection-level error, the
+  coordinator raises ``UpdateFailed`` — the whole source is unreachable and
+  Home Assistant logs that once (and logs the recovery once).
+* Endpoint-specific failures are logged once when they start and once when
+  they recover.
+* Conditions only the user can fix raise a repair issue (see issues.py):
+  API access denied (532/534) and an SNMP agent that never answered.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass, replace
 from datetime import timedelta
-from typing import Any, TypedDict
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
-    # Polling config keys
-    CONF_INTERVAL_REALTIME, CONF_INTERVAL_FAST, CONF_INTERVAL_OPERATIVE,
-    CONF_INTERVAL_STATIC,
-    CONF_POLL_XML_INTERFACES, CONF_POLL_XML_FW_RULES, CONF_POLL_XML_DHCP,
-    CONF_POLL_XML_WEBFILTER, CONF_POLL_XML_ZONES, CONF_POLL_XML_BACKUP,
-    CONF_POLL_XML_ADMIN,
-    CONF_POLL_SNMP_STATS, CONF_POLL_SNMP_SERVICES, CONF_POLL_SNMP_TUNNELS,
-    CONF_POLL_SNMP_HEALTH, CONF_POLL_SNMP_HA, CONF_POLL_SNMP_LICENSES,
-    CONF_POLL_SNMP_DEVICE,
-    # Defaults
-    DEFAULT_INTERVAL_REALTIME, DEFAULT_INTERVAL_FAST, DEFAULT_INTERVAL_OPERATIVE,
-    DEFAULT_INTERVAL_STATIC,
-    DEFAULT_POLL_XML_INTERFACES, DEFAULT_POLL_XML_FW_RULES, DEFAULT_POLL_XML_DHCP,
-    DEFAULT_POLL_XML_WEBFILTER, DEFAULT_POLL_XML_ZONES, DEFAULT_POLL_XML_BACKUP,
-    DEFAULT_POLL_XML_ADMIN,
-    DEFAULT_POLL_SNMP_STATS, DEFAULT_POLL_SNMP_SERVICES, DEFAULT_POLL_SNMP_TUNNELS,
-    DEFAULT_POLL_SNMP_HEALTH, DEFAULT_POLL_SNMP_HA, DEFAULT_POLL_SNMP_LICENSES,
-    DEFAULT_POLL_SNMP_DEVICE,
-    # SNMP
-    CONF_SNMP_ENABLED,
-    # Data keys
-    DATA_ADMIN, DATA_BACKUP, DATA_DHCP_SERVERS, DATA_FIREWALL_RULES,
-    DATA_INTERFACES, DATA_SNMP_DEVICE, DATA_SNMP_HA, DATA_SNMP_HEALTH,
-    DATA_SNMP_LICENSES, DATA_SNMP_SERVICES, DATA_SNMP_STATS, DATA_SNMP_TUNNELS,
-    DATA_WEB_FILTER_POLICIES, DATA_ZONES,
+    EMPTY_CONFIRMATIONS,
+    CONF_POLL_SNMP_HA,
+    CONF_POLL_SNMP_HEALTH,
+    CONF_POLL_SNMP_LICENSES,
+    CONF_POLL_SNMP_SERVICES,
+    CONF_POLL_SNMP_STATS,
+    CONF_POLL_SNMP_TRAFFIC,
+    CONF_POLL_SNMP_TUNNELS,
+    CONF_POLL_XML_BACKUP,
+    CONF_POLL_XML_DHCP,
+    CONF_POLL_XML_FW_RULES,
+    CONF_POLL_XML_INTERFACES,
+    CONF_POLL_XML_WEBFILTER,
+    DEFAULT_INTERVAL_REALTIME,
+    DEFAULT_POLL_SNMP_HA,
+    DEFAULT_POLL_SNMP_HEALTH,
+    DEFAULT_POLL_SNMP_LICENSES,
+    DEFAULT_POLL_SNMP_SERVICES,
+    DEFAULT_POLL_SNMP_STATS,
+    DEFAULT_POLL_SNMP_TRAFFIC,
+    DEFAULT_POLL_SNMP_TUNNELS,
+    DEFAULT_POLL_XML_BACKUP,
+    DEFAULT_POLL_XML_DHCP,
+    DEFAULT_POLL_XML_FW_RULES,
+    DEFAULT_POLL_XML_INTERFACES,
+    DEFAULT_POLL_XML_WEBFILTER,
     DOMAIN,
+    EP_ADMIN,
+    EP_BACKUP,
+    EP_CPU,
+    EP_DEVICE,
+    EP_DHCP_SERVERS,
+    EP_FIREWALL_RULES,
+    EP_HA,
+    EP_HEALTH,
+    EP_INTERFACES,
+    EP_LICENSES,
+    EP_SERVICES,
+    EP_STATS,
+    EP_TRAFFIC,
+    EP_TUNNELS,
+    EP_WEB_FILTER,
+    TIER_INTERVAL_KEYS,
+    Tier,
 )
-from .sophos_client import SophosAPIError, SophosAuthError, SophosClient
-from .snmp_client import SNMPClient
+from .issues import (
+    ISSUE_API_ACCESS_DENIED,
+    ISSUE_SNMP_UNREACHABLE,
+    async_clear_issue,
+    async_raise_issue,
+)
+from .models import InterfaceTraffic, SnmpData, SystemHealth, TrafficSample, XmlData
+from .snmp_client import SNMPClient, SophosSNMPError
+from .sophos_client import (
+    SophosAccessError,
+    SophosAuthError,
+    SophosClient,
+    SophosConnectionError,
+    SophosError,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-# Max concurrent XML requests (Keep-Alive, not cold TLS)
-_XML_CONCURRENCY = 2
+# Delay before retrying endpoints that reported an authentication failure.
+# The firewall occasionally rejects a single request with valid credentials;
+# only a failure that survives the retry starts the reauth flow.
+AUTH_RETRY_DELAY = 2.0
+
+_MIN_BASE_INTERVAL = 5
 
 
-class SophosData(TypedDict):
-    """Typed structure of coordinator data shared with all entity platforms."""
-
-    # XML API
-    interfaces:           list[dict[str, Any]]
-    zones:                list[dict[str, Any]]
-    firewall_rules:       list[dict[str, Any]]
-    web_filter_policies:  list[dict[str, Any]]
-    dhcp_servers:         list[dict[str, Any]]
-    backup:               dict[str, Any]
-    admin:                dict[str, Any]
-    # SNMP
-    snmp_device:          dict[str, Any]
-    snmp_stats:           dict[str, Any]
-    snmp_services:        dict[str, Any]
-    snmp_licenses:        dict[str, Any]
-    snmp_tunnels:         list[dict[str, Any]]
-    snmp_health:          dict[str, Any]
-    snmp_ha:              dict[str, Any]
+def read_option(entry: ConfigEntry, key: str, default: Any) -> Any:
+    """Read a setting from the entry options (all non-connection settings)."""
+    return entry.options.get(key, default)
 
 
-class SophosCoordinator(DataUpdateCoordinator[SophosData]):
-    """Tiered polling coordinator for Sophos Firewall XML API and SNMP."""
+@dataclass(frozen=True, slots=True)
+class Endpoint[ClientT]:
+    """One independently fetched piece of data."""
+
+    key: str  # field name in XmlData / SnmpData
+    tier: Tier
+    fetch: Callable[[ClientT], Awaitable[Any]]
+    toggle: str | None = None  # option key that enables polling, None = always
+    toggle_default: bool = True
+
+
+class TierScheduler:
+    """Decide which endpoints are due.
+
+    An endpoint is due when it was never fetched successfully, or when its
+    tier interval has elapsed since the last successful fetch — minus half a
+    base interval of tolerance.
+
+    Why the tolerance: Home Assistant schedules the next run at
+    ``int(loop.time()) + µ + interval`` measured from the *end* of the
+    previous run, so the elapsed time between two runs is the interval
+    ± a fraction of a second. A strict ``elapsed >= interval`` check skipped
+    about every second realtime run (v1.0.x). With the tolerance the
+    realtime tier (interval == base) is due on every scheduled run, and slower
+    tiers are due on the first run at or after their interval.
+
+    "Never fetched" is None — not 0.0. ``time.monotonic()`` counts from host
+    boot, so a 0.0 sentinel made operative/static endpoints look recently
+    fetched for the first 10/30 minutes after a host reboot (v1.0.x).
+    """
+
+    def __init__(self, intervals: Mapping[Tier, int], base_interval: int) -> None:
+        self._intervals = dict(intervals)
+        self._tolerance = base_interval / 2
+        self._last: dict[str, float] = {}
+
+    def is_due(self, key: str, tier: Tier, now: float) -> bool:
+        """Return True if the endpoint should be fetched now."""
+        last = self._last.get(key)
+        if last is None:
+            return True
+        return now - last >= self._intervals[tier] - self._tolerance
+
+    def mark_fetched(self, key: str, when: float) -> None:
+        """Record a successful fetch."""
+        self._last[key] = when
+
+    def invalidate(self, key: str) -> None:
+        """Make the endpoint due on the next run."""
+        self._last.pop(key, None)
+
+
+def _int_option(entry: ConfigEntry, key: str, default: int) -> int:
+    value = read_option(entry, key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < _MIN_BASE_INTERVAL:
+        _LOGGER.warning("Invalid interval %s=%r — using %ds", key, value, default)
+        return default
+    return value
+
+
+class SophosCoordinator[ClientT, DataT](DataUpdateCoordinator[DataT]):
+    """Endpoint-table driven coordinator shared by the XML and SNMP sources."""
+
+    config_entry: ConfigEntry
+    #: Exceptions that mean "the source is unreachable".
+    connection_errors: tuple[type[Exception], ...] = ()
+    #: Exceptions the client raises by design (logged without traceback).
+    expected_errors: tuple[type[Exception], ...] = ()
+    #: Translation key for the UpdateFailed raised when the source is unreachable.
+    unreachable_translation_key: str = ""
 
     def __init__(
         self,
         hass: HomeAssistant,
         entry: ConfigEntry,
-        xml_client: SophosClient,
-        snmp_client: SNMPClient | None,
+        client: ClientT,
+        *,
+        name: str,
+        endpoints: Iterable[Endpoint[ClientT]],
+        empty: DataT,
     ) -> None:
-        opts = entry.options
-        data = entry.data
-
-        # Helper: read from options, fall back to entry data, then default
-        def _o(key: str, default: Any) -> Any:
-            return opts.get(key, data.get(key, default))
-
-        # Tier intervals
-        self._iv_realtime  = _o(CONF_INTERVAL_REALTIME,  DEFAULT_INTERVAL_REALTIME)
-        self._iv_fast      = _o(CONF_INTERVAL_FAST,      DEFAULT_INTERVAL_FAST)
-        self._iv_operative = _o(CONF_INTERVAL_OPERATIVE, DEFAULT_INTERVAL_OPERATIVE)
-        self._iv_static    = _o(CONF_INTERVAL_STATIC,    DEFAULT_INTERVAL_STATIC)
-
-        # Defense-in-depth: the config flow validates intervals (min=10s), but
-        # options could be set out-of-band (migration, manual .storage edit,
-        # legacy entry). A zero/negative realtime interval would make
-        # update_interval=timedelta(0) and busy-loop the coordinator, hammering
-        # the firewall. Clamp the base interval to a safe floor here.
-        if not isinstance(self._iv_realtime, int) or self._iv_realtime < 5:
-            _LOGGER.warning(
-                "Invalid realtime interval %r — clamping to %ds",
-                self._iv_realtime, DEFAULT_INTERVAL_REALTIME,
-            )
-            self._iv_realtime = DEFAULT_INTERVAL_REALTIME
-
-        # Poll toggles — XML
-        self._poll_xml_interfaces = _o(CONF_POLL_XML_INTERFACES, DEFAULT_POLL_XML_INTERFACES)
-        self._poll_xml_fw_rules   = _o(CONF_POLL_XML_FW_RULES,   DEFAULT_POLL_XML_FW_RULES)
-        self._poll_xml_dhcp       = _o(CONF_POLL_XML_DHCP,       DEFAULT_POLL_XML_DHCP)
-        self._poll_xml_webfilter  = _o(CONF_POLL_XML_WEBFILTER,  DEFAULT_POLL_XML_WEBFILTER)
-        self._poll_xml_zones      = _o(CONF_POLL_XML_ZONES,      DEFAULT_POLL_XML_ZONES)
-        self._poll_xml_backup     = _o(CONF_POLL_XML_BACKUP,     DEFAULT_POLL_XML_BACKUP)
-        self._poll_xml_admin      = _o(CONF_POLL_XML_ADMIN,      DEFAULT_POLL_XML_ADMIN)
-
-        # Poll toggles — SNMP
-        self._poll_snmp_stats     = _o(CONF_POLL_SNMP_STATS,     DEFAULT_POLL_SNMP_STATS)
-        self._poll_snmp_services  = _o(CONF_POLL_SNMP_SERVICES,  DEFAULT_POLL_SNMP_SERVICES)
-        self._poll_snmp_tunnels   = _o(CONF_POLL_SNMP_TUNNELS,   DEFAULT_POLL_SNMP_TUNNELS)
-        self._poll_snmp_health    = _o(CONF_POLL_SNMP_HEALTH,    DEFAULT_POLL_SNMP_HEALTH)
-        self._poll_snmp_ha        = _o(CONF_POLL_SNMP_HA,        DEFAULT_POLL_SNMP_HA)
-        self._poll_snmp_licenses  = _o(CONF_POLL_SNMP_LICENSES,  DEFAULT_POLL_SNMP_LICENSES)
-        self._poll_snmp_device    = _o(CONF_POLL_SNMP_DEVICE,    DEFAULT_POLL_SNMP_DEVICE)
-
-        self.xml_client   = xml_client
-        self._snmp_client = snmp_client
-        self._snmp_enabled = (
-            entry.data.get(CONF_SNMP_ENABLED, False) and snmp_client is not None
-        )
-        self._xml_sem = asyncio.Semaphore(_XML_CONCURRENCY)
-
-        # VM detection: once confirmed as virtual appliance, skip health polling
-        # (temperature/fan OIDs always return None on SFVH)
-        self._is_virtual: bool | None = None  # None = not yet determined
-
-        # Timestamps of last fetch per tier (0 = never)
-        self._last_realtime:  float = 0.0
-        self._last_fast:      float = 0.0
-        self._last_operative: float = 0.0
-        self._last_static:    float = 0.0
-        self._once_done:      bool  = False  # Tier 5: run exactly once
-
+        self.client = client
+        self._endpoints = tuple(endpoints)
+        self._empty = empty
+        intervals = {
+            tier: _int_option(entry, key, default)
+            for tier, (key, default) in TIER_INTERVAL_KEYS.items()
+        }
+        base = intervals[Tier.REALTIME] or DEFAULT_INTERVAL_REALTIME
+        self._scheduler = TierScheduler(intervals, base)
+        self._ok: dict[str, bool] = {}
+        self._failure_logged: set[str] = set()
+        self._fetched_at: dict[str, float] = {}
+        # Bumped by invalidate(): a fetch that was already running when its
+        # endpoint was invalidated (e.g. by a write) must not count as fresh.
+        self._generation: dict[str, int] = {}
+        self._runtime_disabled: set[str] = set()
+        self._restrict_to: frozenset[str] | None = None
+        # One update at a time: a background refresh right after setup must
+        # not overlap with a scheduled or requested one (the XML API answers
+        # one request after another anyway).
+        self._update_lock = asyncio.Lock()
         super().__init__(
             hass,
             _LOGGER,
-            name=f"{DOMAIN}_{entry.entry_id}",
-            update_interval=timedelta(seconds=self._iv_realtime),
             config_entry=entry,
+            name=f"{DOMAIN} {name} {entry.data.get(CONF_HOST, '')}".strip(),
+            update_interval=timedelta(seconds=base),
         )
 
-    async def async_close(self) -> None:
-        """Close the HTTP session when the entry is unloaded."""
-        await self.xml_client.close()
+    # ── Endpoint state (used by entities and platforms) ───────────────────────
 
-    def force_operative_refresh(self) -> None:
-        """Force the operative tier to be treated as due on the next refresh.
+    @property
+    def endpoints(self) -> tuple[Endpoint[ClientT], ...]:
+        """Return the endpoint table."""
+        return self._endpoints
 
-        Call this after any write operation (switch toggle, button press) that
-        modifies data polled in the operative tier (firewall rules, web filter).
-        Without this, the switch state would show stale data for up to 10 minutes.
+    def endpoint_enabled(self, key: str) -> bool:
+        """Return True if the endpoint is polled (option on, not disabled at runtime)."""
+        return key not in self._runtime_disabled and self.endpoint_configured(key)
+
+    def endpoint_configured(self, key: str) -> bool:
+        """Return True if the user's options enable polling of this endpoint."""
+        for endpoint in self._endpoints:
+            if endpoint.key == key:
+                if endpoint.toggle is None:
+                    return True
+                return bool(
+                    read_option(self.config_entry, endpoint.toggle, endpoint.toggle_default)
+                )
+        return False
+
+    def endpoint_available(self, key: str) -> bool:
+        """Return True if the last fetch of this endpoint succeeded."""
+        return self._ok.get(key, False)
+
+    def fetched_at(self, key: str) -> float | None:
+        """Return the monotonic time of the last successful fetch."""
+        return self._fetched_at.get(key)
+
+    def invalidate(self, *keys: str) -> None:
+        """Make the given endpoints due on the next run.
+
+        A cycle that is running right now may already have read the old state
+        (before a write): its result for these endpoints is still applied,
+        but not recorded as a fetch, so the next run reads them again.
         """
-        self._last_operative = 0.0
+        for key in keys:
+            self._scheduler.invalidate(key)
+            self._generation[key] = self._generation.get(key, 0) + 1
 
-    # ── Tier due-checks ───────────────────────────────────────────────────────
+    async def async_refresh_endpoints(self, *keys: str) -> None:
+        """Make the given endpoints due and request a refresh.
 
-    def _due(self, last: float, interval: int) -> bool:
-        """Return True when enough time has elapsed since last fetch."""
-        if interval <= 0:
-            return False
-        return (time.monotonic() - last) >= interval
+        Used after write operations so the written object is re-read no matter
+        which tier it belongs to (v1.0.x only reset the operative tier, so the
+        web-filter switch — static tier — flipped back for up to 30 minutes).
+        """
+        self.invalidate(*keys)
+        await self.async_request_refresh()
 
-    # ── Main update ───────────────────────────────────────────────────────────
+    async def async_first_refresh_of(self, *keys: str) -> None:
+        """First refresh limited to these endpoints; the others stay due.
 
-    async def _async_update_data(self) -> SophosData:
-        """Fetch data according to the tiered polling schedule."""
-        now = time.monotonic()
-
-        run_realtime  = self._due(self._last_realtime,  self._iv_realtime)
-        run_fast      = self._due(self._last_fast,      self._iv_fast)
-        run_operative = self._due(self._last_operative, self._iv_operative)
-        run_static    = self._due(self._last_static,    self._iv_static)
-        run_once      = not self._once_done
-
-        _LOGGER.debug(
-            "Tiers due — realtime:%s fast:%s operative:%s static:%s once:%s",
-            run_realtime, run_fast, run_operative, run_static, run_once,
-        )
-
-        # ── XML API ───────────────────────────────────────────────────────────
+        Setup only waits for what it needs (connectivity, credentials, the
+        device name); the caller refreshes the rest in the background. If
+        the limited fetch only yields API errors (e.g. an API profile without
+        permission for that object), the other endpoints are fetched in the
+        same refresh — the first refresh then behaves as before.
+        """
+        self._restrict_to = frozenset(keys)
         try:
-            xml_data = await self._fetch_xml(
-                run_realtime, run_operative, run_static, run_once
-            )
-        except SophosAuthError as exc:
-            # Session-Timeouts oder transiente Firmware-Fehler können einen
-            # Auth-Fehler auslösen obwohl die Credentials korrekt sind.
-            # Einmaliger Retry nach kurzem Delay bevor wir ConfigEntryAuthFailed
-            # werfen — das würde den Coordinator dauerhaft deaktivieren.
-            _LOGGER.warning(
-                "Auth error from XML API, attempting re-login (%s)", exc
-            )
-            await asyncio.sleep(2)
-            try:
-                xml_data = await self._fetch_xml(
-                    run_realtime, run_operative, run_static, run_once
-                )
-                _LOGGER.info("Re-login successful after auth error")
-            except SophosAuthError as exc2:
-                _LOGGER.error(
-                    "Re-login failed — credentials invalid or firewall unreachable: %s",
-                    exc2,
-                )
-                raise ConfigEntryAuthFailed(
-                    translation_domain=DOMAIN,
-                    translation_key="auth_failed",
-                ) from exc2
-            except SophosAPIError as exc2:
-                raise UpdateFailed(
-                    translation_domain=DOMAIN,
-                    translation_key="xml_api_error",
-                ) from exc2
-            else:
-                # Re-login succeeded — reset all tier timestamps so every tier
-                # runs on the next cycle regardless of when it last ran.
-                # Without this, tiers that were "not due" before the auth error
-                # would silently skip their first fetch after recovery.
-                self._last_realtime  = 0.0
-                self._last_fast      = 0.0
-                self._last_operative = 0.0
-                self._last_static    = 0.0
-                self._once_done      = False
-        except SophosAPIError as exc:
+            await self.async_config_entry_first_refresh()
+        finally:
+            self._restrict_to = None
+
+    # ── Update cycle ──────────────────────────────────────────────────────────
+
+    async def _async_update_data(self) -> DataT:
+        """Fetch every due endpoint concurrently and merge the results."""
+        async with self._update_lock:
+            return await self._update()
+
+    async def _update(self) -> DataT:
+        now = time.monotonic()
+        due = [
+            ep for ep in self._endpoints
+            if self.endpoint_enabled(ep.key) and self._scheduler.is_due(ep.key, ep.tier, now)
+        ]
+        previous: DataT = self.data if self.data is not None else self._empty
+        if not due:
+            return previous
+        generation = dict(self._generation)
+
+        later: list[Endpoint[ClientT]] = []
+        if self._restrict_to is not None:
+            limited = [ep for ep in due if ep.key in self._restrict_to]
+            if limited:
+                later = [ep for ep in due if ep.key not in self._restrict_to]
+                due = limited
+
+        updates, failures = await self._fetch(due)
+        updates, failures = await self._handle_failures(updates, failures)
+        if later and not updates and not all(
+            isinstance(exc, self.connection_errors) for exc in failures.values()
+        ):
+            more_updates, more_failures = await self._handle_failures(*await self._fetch(later))
+            updates.update(more_updates)
+            failures.update(more_failures)
+
+        done = time.monotonic()
+        for key in updates:
+            if self._generation.get(key) != generation.get(key):
+                continue  # invalidated while this cycle ran: read it again
+            self._scheduler.mark_fetched(key, done)
+            self._fetched_at[key] = done
+
+        outage = bool(failures) and not updates and all(
+            isinstance(exc, self.connection_errors) for exc in failures.values()
+        )
+        for key in updates:
+            self._set_endpoint_state(key, None, log=True)
+        for key, exc in failures.items():
+            self._set_endpoint_state(key, exc, log=not outage)
+
+        if outage or (self.data is None and not updates):
+            # Unreachable — or the very first refresh produced nothing usable
+            # (e.g. every endpoint answered with an API error). Loading with
+            # no data at all would create a device and entities without names.
+            first = next(iter(failures.values()))
             raise UpdateFailed(
                 translation_domain=DOMAIN,
-                translation_key="xml_api_error",
-            ) from exc
+                translation_key=self.unreachable_translation_key if outage else "no_data",
+                translation_placeholders={
+                    "host": self.config_entry.data.get(CONF_HOST, ""),
+                    "error": str(first),
+                },
+            ) from first
 
-        # ── SNMP ──────────────────────────────────────────────────────────────
-        if self._snmp_enabled:
-            snmp_data = await self._fetch_snmp(
-                run_realtime, run_fast, run_operative, run_static, run_once
-            )
-            # Detect virtual appliance only when health was actually polled
-            if run_operative and self._poll_snmp_health:
-                self._detect_virtual_appliance(snmp_data)
+        data = replace(previous, **self._prepare(updates))  # type: ignore[type-var]
+        self._after_update(data, updates)
+        return data
+
+    async def _fetch(
+        self, endpoints: Iterable[Endpoint[ClientT]]
+    ) -> tuple[dict[str, Any], dict[str, Exception]]:
+        endpoints = list(endpoints)
+        results = await asyncio.gather(
+            *(ep.fetch(self.client) for ep in endpoints), return_exceptions=True
+        )
+        updates: dict[str, Any] = {}
+        failures: dict[str, Exception] = {}
+        for ep, result in zip(endpoints, results, strict=True):
+            if isinstance(result, Exception):
+                failures[ep.key] = result
+            elif isinstance(result, BaseException):
+                raise result  # CancelledError, KeyboardInterrupt, …
+            else:
+                updates[ep.key] = result
+        return updates, failures
+
+    async def _handle_failures(
+        self, updates: dict[str, Any], failures: dict[str, Exception]
+    ) -> tuple[dict[str, Any], dict[str, Exception]]:
+        """Hook for source-specific error handling (may raise)."""
+        return updates, failures
+
+    def _prepare(self, updates: dict[str, Any]) -> dict[str, Any]:
+        """Hook turning fetched results into data fields (default: as fetched)."""
+        return updates
+
+    def _after_update(self, data: DataT, updates: Mapping[str, Any]) -> None:
+        """Hook called with the merged data after a successful cycle."""
+
+    def _set_endpoint_state(self, key: str, error: Exception | None, *, log: bool) -> None:
+        """Record success/failure; log a failure once and its recovery once.
+
+        ``log=False`` is used while the whole source is down: Home Assistant
+        already logs that (and the recovery) once for the coordinator.
+        """
+        self._ok[key] = error is None
+        if error is None:
+            if key in self._failure_logged:
+                self._failure_logged.discard(key)
+                _LOGGER.info("%s: %s is available again", self.name, key)
+            return
+        if not log or key in self._failure_logged:
+            return
+        self._failure_logged.add(key)
+        if isinstance(error, self.expected_errors):
+            _LOGGER.warning("%s: fetching %s failed: %s", self.name, key, error)
         else:
-            snmp_data = self._empty_snmp()
+            _LOGGER.error(
+                "%s: unexpected error fetching %s", self.name, key, exc_info=error
+            )
 
-        # ── Update timestamps ─────────────────────────────────────────────────
-        if run_realtime:
-            self._last_realtime = now
-        if run_fast:
-            self._last_fast = now
-        if run_operative:
-            self._last_operative = now
-        if run_static:
-            self._last_static = now
-        if run_once:
-            self._once_done = True
+    def disable_endpoint(self, key: str) -> None:
+        """Stop polling an endpoint for the rest of this session."""
+        self._runtime_disabled.add(key)
 
-        return {**xml_data, **snmp_data}
 
-    # ── XML fetch ─────────────────────────────────────────────────────────────
+# ── XML ───────────────────────────────────────────────────────────────────────
 
-    async def _fetch_xml(
-        self,
-        realtime: bool,
-        operative: bool,
-        static: bool,
-        once: bool,
-    ) -> dict[str, Any]:
-        """Fetch XML endpoints for tiers that are due.
+_XML_ENDPOINTS: tuple[Endpoint[SophosClient], ...] = (
+    Endpoint(EP_INTERFACES, Tier.REALTIME, lambda c: c.get_interfaces(),
+             CONF_POLL_XML_INTERFACES, DEFAULT_POLL_XML_INTERFACES),
+    Endpoint(EP_FIREWALL_RULES, Tier.OPERATIVE, lambda c: c.get_firewall_rules(),
+             CONF_POLL_XML_FW_RULES, DEFAULT_POLL_XML_FW_RULES),
+    Endpoint(EP_DHCP_SERVERS, Tier.STATIC, lambda c: c.get_dhcp_servers(),
+             CONF_POLL_XML_DHCP, DEFAULT_POLL_XML_DHCP),
+    Endpoint(EP_WEB_FILTER, Tier.STATIC, lambda c: c.get_web_filter_policies(),
+             CONF_POLL_XML_WEBFILTER, DEFAULT_POLL_XML_WEBFILTER),
+    Endpoint(EP_BACKUP, Tier.STATIC, lambda c: c.get_backup(),
+             CONF_POLL_XML_BACKUP, DEFAULT_POLL_XML_BACKUP),
+    Endpoint(EP_ADMIN, Tier.STATIC, lambda c: c.get_admin_settings()),
+)
 
-        Endpoints within each tier are fetched concurrently via asyncio.gather()
-        bounded by the Semaphore(2) — matching the pattern used by _fetch_snmp().
-        Endpoints not due for their tier return the previously cached value.
+
+class SophosXmlCoordinator(SophosCoordinator[SophosClient, XmlData]):
+    """Coordinator for the XML API."""
+
+    connection_errors = (SophosConnectionError,)
+    expected_errors = (SophosError,)
+    unreachable_translation_key = "xml_unreachable"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, client: SophosClient) -> None:
+        super().__init__(
+            hass, entry, client, name="XML", endpoints=_XML_ENDPOINTS, empty=XmlData()
+        )
+
+    async def _handle_failures(
+        self, updates: dict[str, Any], failures: dict[str, Exception]
+    ) -> tuple[dict[str, Any], dict[str, Exception]]:
+        auth_failed = [k for k, exc in failures.items() if isinstance(exc, SophosAuthError)]
+        if auth_failed:
+            _LOGGER.debug("%s: auth error for %s — retrying once", self.name, auth_failed)
+            await asyncio.sleep(AUTH_RETRY_DELAY)
+            retry = [ep for ep in self._endpoints if ep.key in auth_failed]
+            retry_updates, retry_failures = await self._fetch(retry)
+            for key in auth_failed:
+                failures.pop(key)
+            updates.update(retry_updates)
+            failures.update(retry_failures)
+            if still := next(
+                (exc for exc in retry_failures.values() if isinstance(exc, SophosAuthError)),
+                None,
+            ):
+                raise ConfigEntryAuthFailed(
+                    translation_domain=DOMAIN, translation_key="auth_failed"
+                ) from still
+
+        if access := next(
+            (exc for exc in failures.values() if isinstance(exc, SophosAccessError)), None
+        ):
+            async_raise_issue(
+                self.hass, self.config_entry, ISSUE_API_ACCESS_DENIED, code=access.code or ""
+            )
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="api_access_denied",
+                translation_placeholders={
+                    "host": self.config_entry.data.get(CONF_HOST, ""),
+                    "code": access.code or "",
+                },
+            ) from access
+        if updates:
+            async_clear_issue(self.hass, self.config_entry, ISSUE_API_ACCESS_DENIED)
+        return updates, failures
+
+
+# ── SNMP ──────────────────────────────────────────────────────────────────────
+
+_SNMP_ENDPOINTS: tuple[Endpoint[SNMPClient], ...] = (
+    Endpoint(EP_STATS, Tier.REALTIME, lambda c: c.get_stats(),
+             CONF_POLL_SNMP_STATS, DEFAULT_POLL_SNMP_STATS),
+    Endpoint(EP_SERVICES, Tier.REALTIME, lambda c: c.get_services(),
+             CONF_POLL_SNMP_SERVICES, DEFAULT_POLL_SNMP_SERVICES),
+    Endpoint(EP_TUNNELS, Tier.FAST, lambda c: c.get_vpn_tunnels(),
+             CONF_POLL_SNMP_TUNNELS, DEFAULT_POLL_SNMP_TUNNELS),
+    Endpoint(EP_HA, Tier.FAST, lambda c: c.get_ha_status(),
+             CONF_POLL_SNMP_HA, DEFAULT_POLL_SNMP_HA),
+    Endpoint(EP_HEALTH, Tier.OPERATIVE, lambda c: c.get_system_health(),
+             CONF_POLL_SNMP_HEALTH, DEFAULT_POLL_SNMP_HEALTH),
+    Endpoint(EP_LICENSES, Tier.STATIC, lambda c: c.get_licenses(),
+             CONF_POLL_SNMP_LICENSES, DEFAULT_POLL_SNMP_LICENSES),
+    Endpoint(EP_DEVICE, Tier.STATIC, lambda c: c.get_device_info()),
+    # CPU load belongs to the system statistics (same option).
+    Endpoint(EP_CPU, Tier.REALTIME, lambda c: c.get_cpu_load(),
+             CONF_POLL_SNMP_STATS, DEFAULT_POLL_SNMP_STATS),
+    Endpoint(EP_TRAFFIC, Tier.REALTIME, lambda c: c.get_traffic(),
+             CONF_POLL_SNMP_TRAFFIC, DEFAULT_POLL_SNMP_TRAFFIC),
+)
+
+
+def _rate(previous: int | None, current: int | None, seconds: float | None) -> float | None:
+    """Bit/s between two octet counter readings, or None if not computable.
+
+    A counter that went backwards was reset (reboot, interface re-created):
+    no rate for that interval rather than a negative or wrapped value.
+    """
+    if previous is None or current is None or seconds is None or seconds < 1:
+        return None
+    if current < previous:
+        return None
+    return round((current - previous) * 8 / seconds, 1)
+
+
+def traffic_rates(
+    previous: TrafficSample | None, current: TrafficSample
+) -> dict[str, InterfaceTraffic]:
+    """Counters and rates per interface from two consecutive samples."""
+    seconds = None if previous is None else current.sampled_at - previous.sampled_at
+    result: dict[str, InterfaceTraffic] = {}
+    for name, now in current.counters.items():
+        before = previous.counters.get(name) if previous is not None else None
+        result[name] = InterfaceTraffic(
+            in_octets=now.in_octets,
+            out_octets=now.out_octets,
+            in_bps=_rate(before.in_octets if before else None, now.in_octets, seconds),
+            out_bps=_rate(before.out_octets if before else None, now.out_octets, seconds),
+        )
+    return result
+
+
+#: The "SNMP unreachable" issue needs both: this many failed attempts and
+#: this much time since the first one, without any answer in between. The
+#: time matters after a power outage: HA and the firewall boot together, the
+#: XML API answers first and the SNMP agent a few minutes later.
+SNMP_ISSUE_AFTER_ATTEMPTS = 3
+SNMP_ISSUE_AFTER_SECONDS = 600
+
+
+class SophosSnmpCoordinator(SophosCoordinator[SNMPClient, SnmpData]):
+    """Coordinator for SNMP."""
+
+    connection_errors = (SophosSNMPError,)
+    expected_errors = (SophosSNMPError,)
+    unreachable_translation_key = "snmp_unreachable"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, client: SNMPClient) -> None:
+        super().__init__(
+            hass, entry, client, name="SNMP", endpoints=_SNMP_ENDPOINTS, empty=SnmpData()
+        )
+        self.is_virtual: bool | None = None
+        self._empty_health_reads = 0
+        self._reached = False
+        self._failed_attempts = 0
+        self._first_failure: float | None = None
+        self._traffic_sample: TrafficSample | None = None
+
+    async def _async_update_data(self) -> SnmpData:
+        """Raise a repair issue if the agent has not answered since setup.
+
+        Only before the first answer: an agent that worked and then fails is
+        an outage (entities unavailable, logged once), not a setup problem.
+        See SNMP_ISSUE_AFTER_* for when it is raised.
         """
-        sem = self._xml_sem
+        try:
+            data = await super()._async_update_data()
+        except UpdateFailed:
+            if not self._reached:
+                now = time.monotonic()
+                if self._first_failure is None:
+                    self._first_failure = now
+                self._failed_attempts += 1
+                if (
+                    self._failed_attempts >= SNMP_ISSUE_AFTER_ATTEMPTS
+                    and now - self._first_failure >= SNMP_ISSUE_AFTER_SECONDS
+                ):
+                    async_raise_issue(self.hass, self.config_entry, ISSUE_SNMP_UNREACHABLE)
+            raise
+        if not self._reached and any(self._ok.values()):
+            self._reached = True
+            async_clear_issue(self.hass, self.config_entry, ISSUE_SNMP_UNREACHABLE)
+        return data
 
-        async def g(coro):
-            """Run coro with connection-pool semaphore."""
-            async with sem:
-                return await coro
+    def _prepare(self, updates: dict[str, Any]) -> dict[str, Any]:
+        """Turn a traffic sample into counters and rates.
 
-        def _keep(key: str, default: Any) -> Any:
-            """Return previous value from coordinator.data."""
-            return (self.data.get(key) if self.data else None) or default
-
-        # ── Build per-tier coroutine lists ────────────────────────────────────
-        coros:    list = []
-        keys:     list[str] = []
-
-        # Tier 1 REALTIME
-        if realtime and self._poll_xml_interfaces:
-            coros.append(g(self.xml_client.get_interfaces()))
-            keys.append(DATA_INTERFACES)
-
-        # Tier 3 OPERATIVE
-        if operative and self._poll_xml_fw_rules:
-            coros.append(g(self.xml_client.get_firewall_rules()))
-            keys.append(DATA_FIREWALL_RULES)
-
-        # Tier 4 STATIC
-        if static and self._poll_xml_dhcp:
-            coros.append(g(self.xml_client.get_dhcp_servers()))
-            keys.append(DATA_DHCP_SERVERS)
-        if static and self._poll_xml_webfilter:
-            coros.append(g(self.xml_client.get_web_filter_policies()))
-            keys.append(DATA_WEB_FILTER_POLICIES)
-        if static and self._poll_xml_backup:
-            coros.append(g(self.xml_client.get_backup()))
-            keys.append(DATA_BACKUP)
-
-        # Tier 5 ONCE
-        if once and self._poll_xml_zones:
-            coros.append(g(self.xml_client.get_zones()))
-            keys.append(DATA_ZONES)
-        if once and self._poll_xml_admin:
-            coros.append(g(self.xml_client.get_admin_settings()))
-            keys.append(DATA_ADMIN)
-
-        # ── Fetch all due endpoints concurrently ──────────────────────────────
-        results = await asyncio.gather(*coros) if coros else []
-        fetched = dict(zip(keys, results))
-
-        def _r(key: str, default: Any) -> Any:
-            """Return fetched value or fall back to cached/default."""
-            return fetched[key] if key in fetched else _keep(key, default)
-
-        return {
-            DATA_INTERFACES:          _r(DATA_INTERFACES,          []),
-            DATA_ZONES:               _r(DATA_ZONES,               []),
-            DATA_FIREWALL_RULES:      _r(DATA_FIREWALL_RULES,      []),
-            DATA_WEB_FILTER_POLICIES: _r(DATA_WEB_FILTER_POLICIES, []),
-            DATA_DHCP_SERVERS:        _r(DATA_DHCP_SERVERS,        []),
-            DATA_BACKUP:              _r(DATA_BACKUP,              {}),
-            DATA_ADMIN:               _r(DATA_ADMIN,               {}),
-        }
-
-    # ── SNMP fetch ────────────────────────────────────────────────────────────
-
-    async def _fetch_snmp(
-        self,
-        realtime: bool,
-        fast: bool,
-        operative: bool,
-        static: bool,
-        once: bool,
-    ) -> dict[str, Any]:
-        """Fetch SNMP endpoints for tiers that are due."""
-        if self._snmp_client is None:
-            _LOGGER.error("_fetch_snmp called but snmp_client is None — this is a bug")
-            return self._empty_snmp()
-
-        def _keep(key: str) -> Any:
-            return self.data.get(key) if self.data else None
-
-        async def _gather_tier(
-            tier_name: str,
-            coros: list,
-            keys: list[str],
-            defaults: dict[str, Any],
-        ) -> dict[str, Any]:
-            """Run one SNMP tier with return_exceptions so a single failing OID
-            doesn't abort all other tiers.  Network errors are logged as warning
-            (non-fatal); unexpected errors as error."""
-            if not coros:
-                return {}
-            raw = await asyncio.gather(*coros, return_exceptions=True)
-            result: dict[str, Any] = {}
-            for key, val in zip(keys, raw):
-                if isinstance(val, (asyncio.TimeoutError, OSError)):
-                    _LOGGER.warning(
-                        "SNMP tier %s: network error for %s (%s) — retaining cached value",
-                        tier_name, key, val,
-                    )
-                    result[key] = _keep(key) if self.data else defaults.get(key)
-                elif isinstance(val, Exception):
-                    _LOGGER.error(
-                        "SNMP tier %s: unexpected error for %s (%s)",
-                        tier_name, key, val, exc_info=val,
-                    )
-                    result[key] = _keep(key) if self.data else defaults.get(key)
-                else:
-                    result[key] = val
-            return result
-
-        # ── Tier 1 REALTIME ───────────────────────────────────────────────
-        coros_realtime: list = []
-        keys_realtime:  list[str] = []
-        if realtime and self._poll_snmp_stats:
-            coros_realtime.append(self._snmp_client.get_stats())
-            keys_realtime.append(DATA_SNMP_STATS)
-        if realtime and self._poll_snmp_services:
-            coros_realtime.append(self._snmp_client.get_services())
-            keys_realtime.append(DATA_SNMP_SERVICES)
-
-        results_realtime = await _gather_tier(
-            "realtime", coros_realtime, keys_realtime,
-            {DATA_SNMP_STATS: {}, DATA_SNMP_SERVICES: {}},
-        )
-
-        # ── Tier 2 FAST ───────────────────────────────────────────────────
-        coros_fast: list = []
-        keys_fast:  list[str] = []
-        if fast and self._poll_snmp_tunnels:
-            coros_fast.append(self._snmp_client.get_vpn_tunnels())
-            keys_fast.append(DATA_SNMP_TUNNELS)
-        if fast and self._poll_snmp_ha:
-            coros_fast.append(self._snmp_client.get_ha_status())
-            keys_fast.append(DATA_SNMP_HA)
-
-        results_fast = await _gather_tier(
-            "fast", coros_fast, keys_fast,
-            {DATA_SNMP_TUNNELS: [], DATA_SNMP_HA: {}},
-        )
-
-        # ── Tier 3 OPERATIVE ─────────────────────────────────────────────
-        coros_op: list = []
-        keys_op:  list[str] = []
-        # Skip health polling on confirmed virtual appliances —
-        # temperature/fan OIDs always return None on SFVH
-        poll_health = self._poll_snmp_health and self._is_virtual is not True
-        if operative and poll_health:
-            coros_op.append(self._snmp_client.get_system_health())
-            keys_op.append(DATA_SNMP_HEALTH)
-
-        results_op = await _gather_tier(
-            "operative", coros_op, keys_op,
-            {DATA_SNMP_HEALTH: {}},
-        )
-
-        # ── Tier 4 STATIC ─────────────────────────────────────────────────
-        coros_static: list = []
-        keys_static:  list[str] = []
-        if static and self._poll_snmp_licenses:
-            coros_static.append(self._snmp_client.get_licenses())
-            keys_static.append(DATA_SNMP_LICENSES)
-
-        results_static = await _gather_tier(
-            "static", coros_static, keys_static,
-            {DATA_SNMP_LICENSES: {}},
-        )
-
-        # ── Tier 5 ONCE ───────────────────────────────────────────────────
-        coros_once: list = []
-        keys_once:  list[str] = []
-        if once and self._poll_snmp_device:
-            coros_once.append(self._snmp_client.get_device_info())
-            keys_once.append(DATA_SNMP_DEVICE)
-
-        results_once = await _gather_tier(
-            "once", coros_once, keys_once,
-            {DATA_SNMP_DEVICE: {}},
-        )
-
-        # ── Merge results with previous data ──────────────────────────────────
-        def _r(tier_result: dict[str, Any], data_key: str, default: Any) -> Any:
-            """Return fetched value from tier dict, or fall back to cached/default."""
-            if data_key in tier_result:
-                return tier_result[data_key]
-            return (_keep(data_key) if self.data else None) or default
-
-        return {
-            DATA_SNMP_STATS:    _r(results_realtime, DATA_SNMP_STATS,    {}),
-            DATA_SNMP_SERVICES: _r(results_realtime, DATA_SNMP_SERVICES, {}),
-            DATA_SNMP_TUNNELS:  _r(results_fast,     DATA_SNMP_TUNNELS,  []),
-            DATA_SNMP_HA:       _r(results_fast,     DATA_SNMP_HA,       {}),
-            DATA_SNMP_HEALTH:   _r(results_op,       DATA_SNMP_HEALTH,   {}),
-            DATA_SNMP_LICENSES: _r(results_static,   DATA_SNMP_LICENSES, {}),
-            DATA_SNMP_DEVICE:   _r(results_once,     DATA_SNMP_DEVICE,   {}),
-        }
-
-    def _detect_virtual_appliance(self, snmp_data: dict) -> None:
-        """Detect virtual appliance from SNMP data after first health fetch.
-
-        Sets self._is_virtual = True when:
-        - cpu_temperature_c is None (OIDs unsupported on SFVH)
-        - fans dict is empty (no hardware fans)
-
-        Once confirmed virtual, health polling is skipped in future cycles
-        to avoid unnecessary SNMP requests that always return nothing.
+        The rate uses the time between this sample and the previous
+        successful one. After a failed walk that is simply a longer interval —
+        the average over it is still correct.
         """
-        if self._is_virtual is not None:
-            return  # already determined
-        health = snmp_data.get(DATA_SNMP_HEALTH, {})
-        if not health:
-            return  # health not yet fetched
+        sample = updates.get(EP_TRAFFIC)
+        if isinstance(sample, TrafficSample):
+            updates = {**updates, EP_TRAFFIC: traffic_rates(self._traffic_sample, sample)}
+            self._traffic_sample = sample
+        return updates
 
-        cpu_temp = health.get("cpu_temperature_c")
-        fans     = health.get("fans", {})
+    def _after_update(self, data: SnmpData, updates: Mapping[str, Any]) -> None:
+        """Detect a virtual appliance from *successful* health fetches.
 
-        if cpu_temp is None and not fans:
-            self._is_virtual = True
+        v1.0.x ran the detection on failed fetches too, so a single SNMP
+        timeout at startup classified a hardware appliance as virtual and
+        stopped health polling until the next restart. A booting appliance
+        can also answer without sensor values, so only EMPTY_CONFIRMATIONS
+        empty answers in a row mean "virtual".
+        """
+        health = updates.get(EP_HEALTH)
+        if self.is_virtual is not None or not isinstance(health, SystemHealth):
+            return
+        if health.has_hardware_sensors:
+            self.is_virtual = False
+            return
+        self._empty_health_reads += 1
+        if self._empty_health_reads >= EMPTY_CONFIRMATIONS:
+            self.is_virtual = True
             _LOGGER.info(
-                "Virtual appliance detected (SFVH) — "
-                "hardware health polling disabled (temperature/fan OIDs unavailable)"
+                "%s: no hardware sensors reported (virtual appliance) — "
+                "health polling disabled for this session",
+                self.name,
             )
-        else:
-            self._is_virtual = False
-            _LOGGER.debug("Physical appliance confirmed — hardware health polling active")
-
-    @staticmethod
-    def _empty_snmp() -> dict[str, Any]:
-        return {
-            DATA_SNMP_DEVICE:   {},
-            DATA_SNMP_STATS:    {},
-            DATA_SNMP_SERVICES: {},
-            DATA_SNMP_LICENSES: {},
-            DATA_SNMP_TUNNELS:  [],
-            DATA_SNMP_HEALTH:   {},
-            DATA_SNMP_HA:       {},
-        }
+            self.disable_endpoint(EP_HEALTH)

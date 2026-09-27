@@ -1,55 +1,49 @@
-"""Button platform for Sophos Firewall integration."""
+"""Button platform for the Sophos Firewall integration."""
 from __future__ import annotations
 
-import logging
-
 from homeassistant.components.button import ButtonEntity
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from . import SophosConfigEntry
 from .const import DOMAIN
-from .coordinator import SophosCoordinator
-from .entity import SophosEntity
-from .sophos_client import SophosAPIError
+from .coordinator import SophosXmlCoordinator
+from .entity import SophosXmlEntity
+from .sophos_client import SophosError
 
-_LOGGER = logging.getLogger(__name__)
-
-PARALLEL_UPDATES = 0
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: SophosConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up button entities."""
-    coordinator: SophosCoordinator = entry.runtime_data
-    async_add_entities([SophosBackupButton(coordinator)])
+    """Set up the backup button."""
+    async_add_entities([SophosBackupButton(entry.runtime_data.xml)])
 
 
-class SophosBackupButton(SophosEntity, ButtonEntity):
-    """Button to trigger an immediate backup on the Sophos Firewall.
+class SophosBackupButton(SophosXmlEntity, ButtonEntity):
+    """Trigger an immediate backup.
 
-    Uses the XML API BackupRestore endpoint.  This is a write operation
-    but is intentionally not gated by write_access because triggering
-    a backup is non-destructive.
+    Not gated by write access: a backup is non-destructive.
     """
 
     _attr_translation_key = "trigger_backup"
-    _attr_icon = "mdi:backup-restore"
+    _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, coordinator: SophosCoordinator) -> None:
-        super().__init__(coordinator, unique_suffix="button_backup")
+    def __init__(self, coordinator: SophosXmlCoordinator) -> None:
+        super().__init__(coordinator, "button_backup", None)
 
     async def async_press(self) -> None:
-        """Trigger an immediate backup via the dedicated client method."""
+        """Trigger the backup."""
         try:
-            await self.coordinator.xml_client.trigger_backup()
-        except SophosAPIError as exc:
-            _LOGGER.error("Failed to trigger backup: %s", exc)
+            await self.coordinator.client.trigger_backup()
+        except SophosError as exc:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="backup_failed",
+                translation_placeholders={"error": str(exc)},
             ) from exc

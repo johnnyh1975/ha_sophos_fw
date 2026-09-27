@@ -1,247 +1,170 @@
-"""Switch platform for Sophos Firewall integration.
+"""Switch platform for the Sophos Firewall integration.
 
-Switches are only registered when write_access is enabled.
-Uses two-phase registration (same pattern as binary_sensor.py) to support
-lazy loading — dynamic entities are added via coordinator listener.
+Switches exist only with write access enabled. After a successful write the
+new state is shown optimistically until the written endpoint has actually
+been re-read from the firewall.
 """
 from __future__ import annotations
 
-import logging
+import time
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EntityCategory
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import (
-    CONF_WRITE_ACCESS,
-    DATA_FIREWALL_RULES,
-    DATA_WEB_FILTER_POLICIES,
-    DOMAIN,
+from . import SophosConfigEntry
+from .const import CONF_WRITE_ACCESS, DOMAIN, EP_FIREWALL_RULES, EP_WEB_FILTER
+from .coordinator import SophosXmlCoordinator
+from .entity import (
+    DynamicFamily,
+    SophosXmlEntity,
+    async_remove_stale_entities,
+    async_setup_dynamic_entities,
 )
-from .coordinator import SophosCoordinator
-from .entity import SophosEntity, field_str
-from .sophos_client import SophosClient, SophosAPIError
+from .models import FirewallRule, WebFilterPolicy, XmlData
+from .sophos_client import SophosError
 
-_LOGGER = logging.getLogger(__name__)
-
-PARALLEL_UPDATES = 0
+# Writes go to the firewall one at a time.
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: SophosConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up switch entities — only when write_access is enabled."""
-    if not entry.data.get(CONF_WRITE_ACCESS, False):
+    """Set up switches — only when write access is enabled."""
+    if not entry.options.get(CONF_WRITE_ACCESS, False):
+        # Switches from a period with write access would otherwise linger as
+        # unavailable entities. Configuration-driven, so remove_all is safe.
+        for family in ("switch_fwrule_", "switch_webfilter_"):
+            async_remove_stale_entities(hass, entry, "switch", family, (), remove_all=True)
         return
 
-    coordinator: SophosCoordinator = entry.runtime_data
-    added_ids: set[str] = set()
-
-    def _add_switches() -> None:
-        data = coordinator.data
-        if not data:
-            return
-        reg = er.async_get(coordinator.hass)
-        new_entities: list[SwitchEntity] = []
-
-        # ── Firewall rule switches ─────────────────────────────────────────────
-        current_rule_names: set[str] = {
-            r.get("Name", "") for r in data.get(DATA_FIREWALL_RULES, [])
-        }
-        for rule in data.get(DATA_FIREWALL_RULES, []):
-            uid = f"{entry.entry_id}_switch_fwrule_{rule.get('Name','')}"
-            if uid not in added_ids:
-                added_ids.add(uid)
-                new_entities.append(SophosFirewallRuleSwitch(coordinator, rule))
-
-        for uid in list(added_ids):
-            if not uid.startswith(f"{entry.entry_id}_switch_fwrule_"):
-                continue
-            name = uid[len(f"{entry.entry_id}_switch_fwrule_"):]
-            if name not in current_rule_names:
-                entity_id = reg.async_get_entity_id("switch", "sophos_firewall", uid)
-                if entity_id:
-                    reg.async_remove(entity_id)
-                added_ids.discard(uid)
-
-        # ── Web filter switches ────────────────────────────────────────────────
-        current_policy_names: set[str] = {
-            p.get("Name", "") for p in data.get(DATA_WEB_FILTER_POLICIES, [])
-        }
-        for policy in data.get(DATA_WEB_FILTER_POLICIES, []):
-            uid = f"{entry.entry_id}_switch_webfilter_{policy.get('Name','')}"
-            if uid not in added_ids:
-                added_ids.add(uid)
-                new_entities.append(SophosWebFilterSwitch(coordinator, policy))
-
-        for uid in list(added_ids):
-            if not uid.startswith(f"{entry.entry_id}_switch_webfilter_"):
-                continue
-            name = uid[len(f"{entry.entry_id}_switch_webfilter_"):]
-            if name not in current_policy_names:
-                entity_id = reg.async_get_entity_id("switch", "sophos_firewall", uid)
-                if entity_id:
-                    reg.async_remove(entity_id)
-                added_ids.discard(uid)
-
-        if new_entities:
-            _LOGGER.debug("Adding %d switch entities", len(new_entities))
-            async_add_entities(new_entities)
-
-    entry.async_on_unload(
-        coordinator.async_add_listener(_add_switches)
+    async_setup_dynamic_entities(
+        hass, entry, entry.runtime_data.xml, "switch", async_add_entities,
+        [
+            DynamicFamily(
+                "switch_fwrule_", EP_FIREWALL_RULES, _rule_items, SophosFirewallRuleSwitch
+            ),
+            DynamicFamily(
+                "switch_webfilter_", EP_WEB_FILTER, _policy_items, SophosWebFilterSwitch
+            ),
+        ],
     )
 
-    if coordinator.data:
-        _add_switches()
+
+def _rule_items(data: XmlData) -> dict[str, FirewallRule] | None:
+    if data.firewall_rules is None:
+        return None
+    return {f"switch_fwrule_{name}": rule for name, rule in data.firewall_rules.items()}
 
 
-class SophosFirewallRuleSwitch(SophosEntity, SwitchEntity, RestoreEntity):
-    """Switch to enable/disable a Sophos firewall rule.
+def _policy_items(data: XmlData) -> dict[str, WebFilterPolicy] | None:
+    if data.web_filter_policies is None:
+        return None
+    return {f"switch_webfilter_{n}": p for n, p in data.web_filter_policies.items()}
 
-    EntityCategory.CONFIG — erscheint nur im Konfigurationsbereich der Geräte-Seite.
-    RestoreEntity: zeigt letzten bekannten State sofort nach HA-Neustart.
-    """
+
+class _SophosWriteSwitch(SophosXmlEntity, SwitchEntity):
+    """Common write/optimistic-state handling."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: SophosXmlCoordinator, suffix: str, endpoint: str) -> None:
+        super().__init__(coordinator, suffix, endpoint)
+        self._optimistic: bool | None = None
+        self._written_at: float | None = None
+
+    def _actual(self) -> bool | None:
+        raise NotImplementedError
+
+    async def _write(self, on: bool) -> None:
+        raise NotImplementedError
+
+    @property
+    def is_on(self) -> bool | None:
+        if self._optimistic is not None:
+            return self._optimistic
+        return self._actual()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Drop the optimistic state once the endpoint was re-read after the write."""
+        fetched = self.coordinator.fetched_at(self._endpoint or "")
+        if self._written_at is not None and fetched is not None and fetched > self._written_at:
+            self._optimistic = None
+            self._written_at = None
+        super()._handle_coordinator_update()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self._set(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self._set(False)
+
+    async def _set(self, on: bool) -> None:
+        try:
+            await self._write(on)
+        except SophosError as exc:
+            await self.coordinator.async_refresh_endpoints(self._endpoint or "")
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="write_failed",
+                translation_placeholders={"name": self._object_name, "error": str(exc)},
+            ) from exc
+        self._optimistic = on
+        self._written_at = time.monotonic()
+        self.async_write_ha_state()
+        await self.coordinator.async_refresh_endpoints(self._endpoint or "")
+
+    @property
+    def _object_name(self) -> str:
+        raise NotImplementedError
+
+
+class SophosFirewallRuleSwitch(_SophosWriteSwitch):
+    """Enable/disable a firewall rule."""
 
     _attr_translation_key = "firewall_rule"
-    _attr_entity_category = EntityCategory.CONFIG
-    _attr_icon = "mdi:shield-outline"
 
-    def __init__(
-        self, coordinator: SophosCoordinator, rule: dict[str, Any]
-    ) -> None:
-        self._rule_name = rule.get("Name", "unknown")
-        super().__init__(coordinator, unique_suffix=f"switch_fwrule_{self._rule_name}")
-        self._attr_translation_placeholders = {"name": self._rule_name}
-        self._restored_is_on: bool | None = None
-        self._optimistic: bool | None = None
-
-    async def async_added_to_hass(self) -> None:
-        """Restore the last known state on startup."""
-        await super().async_added_to_hass()
-        last_state = await self.async_get_last_state()
-        if last_state is not None and last_state.state in ("on", "off"):
-            self._restored_is_on = last_state.state == "on"
-
-    def _handle_coordinator_update(self) -> None:
-        """Clear the optimistic override once fresh data has arrived."""
-        self._optimistic = None
-        super()._handle_coordinator_update()
+    def __init__(self, coordinator: SophosXmlCoordinator, rule: FirewallRule) -> None:
+        super().__init__(coordinator, f"switch_fwrule_{rule.name}", EP_FIREWALL_RULES)
+        self._name = rule.name
+        self._attr_translation_placeholders = {"name": rule.name}
 
     @property
-    def is_on(self) -> bool | None:
-        if self._optimistic is not None:
-            return self._optimistic
-        if self.coordinator.data is None:
-            return self._restored_is_on
-        for rule in self.coordinator.data.get(DATA_FIREWALL_RULES, []):
-            if rule.get("Name") == self._rule_name:
-                return field_str(rule, "Status").lower() == "enable"
-        return None
+    def _object_name(self) -> str:
+        return self._name
 
-    async def async_turn_on(self, **_: Any) -> None:
-        await self._set(enable=True)
+    def _actual(self) -> bool | None:
+        rule = (self.xml.firewall_rules or {}).get(self._name)
+        return rule.enabled if rule else None
 
-    async def async_turn_off(self, **_: Any) -> None:
-        await self._set(enable=False)
-
-    async def _set(self, enable: bool) -> None:
-        client: SophosClient = self.coordinator.xml_client
-        try:
-            await client.set_firewall_rule_status(self._rule_name, enable)
-        except SophosAPIError as exc:
-            _LOGGER.error("Failed to set firewall rule %r: %s", self._rule_name, exc)
-            # Write failed — force a refresh so the UI reverts to actual state
-            self.coordinator.force_operative_refresh()
-            await self.coordinator.async_request_refresh()
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="write_failed",
-            ) from exc
-        # Optimistic update: reflect the new state immediately rather than
-        # showing stale data until the refresh round-trip completes.
-        # _handle_coordinator_update() clears this once fresh data arrives.
-        self._optimistic = enable
-        self.async_write_ha_state()
-        self.coordinator.force_operative_refresh()
-        await self.coordinator.async_request_refresh()
+    async def _write(self, on: bool) -> None:
+        await self.coordinator.client.set_firewall_rule_status(self._name, on)
 
 
-class SophosWebFilterSwitch(SophosEntity, SwitchEntity, RestoreEntity):
-    """Switch to toggle a web filter policy DefaultAction (Allow / Deny).
-
-    ``is_on`` = True when DefaultAction == "Allow".
-    EntityCategory.CONFIG — erscheint nur im Konfigurationsbereich der Geräte-Seite.
-    RestoreEntity: zeigt letzten bekannten State sofort nach HA-Neustart.
-    """
+class SophosWebFilterSwitch(_SophosWriteSwitch):
+    """Toggle a web filter policy's DefaultAction (on = Allow)."""
 
     _attr_translation_key = "web_filter_policy"
-    _attr_entity_category = EntityCategory.CONFIG
-    _attr_icon = "mdi:filter-outline"
 
-    def __init__(
-        self, coordinator: SophosCoordinator, policy: dict[str, Any]
-    ) -> None:
-        self._policy_name = policy.get("Name", "unknown")
-        super().__init__(
-            coordinator, unique_suffix=f"switch_webfilter_{self._policy_name}"
-        )
-        self._attr_translation_placeholders = {"name": self._policy_name}
-        self._restored_is_on: bool | None = None
-        self._optimistic: bool | None = None
-
-    async def async_added_to_hass(self) -> None:
-        """Restore the last known state on startup."""
-        await super().async_added_to_hass()
-        last_state = await self.async_get_last_state()
-        if last_state is not None and last_state.state in ("on", "off"):
-            self._restored_is_on = last_state.state == "on"
-
-    def _handle_coordinator_update(self) -> None:
-        """Clear the optimistic override once fresh data has arrived."""
-        self._optimistic = None
-        super()._handle_coordinator_update()
+    def __init__(self, coordinator: SophosXmlCoordinator, policy: WebFilterPolicy) -> None:
+        super().__init__(coordinator, f"switch_webfilter_{policy.name}", EP_WEB_FILTER)
+        self._name = policy.name
+        self._attr_translation_placeholders = {"name": policy.name}
 
     @property
-    def is_on(self) -> bool | None:
-        if self._optimistic is not None:
-            return self._optimistic
-        if self.coordinator.data is None:
-            return self._restored_is_on
-        for policy in self.coordinator.data.get(DATA_WEB_FILTER_POLICIES, []):
-            if policy.get("Name") == self._policy_name:
-                return field_str(policy, "DefaultAction").lower() == "allow"
-        return None
+    def _object_name(self) -> str:
+        return self._name
 
-    async def async_turn_on(self, **_: Any) -> None:
-        await self._set(allow=True)
+    def _actual(self) -> bool | None:
+        policy = (self.xml.web_filter_policies or {}).get(self._name)
+        return policy.allows if policy else None
 
-    async def async_turn_off(self, **_: Any) -> None:
-        await self._set(allow=False)
-
-    async def _set(self, allow: bool) -> None:
-        client: SophosClient = self.coordinator.xml_client
-        try:
-            await client.set_web_filter_default_action(self._policy_name, allow)
-        except SophosAPIError as exc:
-            _LOGGER.error(
-                "Failed to set web filter policy %r: %s", self._policy_name, exc
-            )
-            self.coordinator.force_operative_refresh()
-            await self.coordinator.async_request_refresh()
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="write_failed",
-            ) from exc
-        self._optimistic = allow
-        self.async_write_ha_state()
-        self.coordinator.force_operative_refresh()
-        await self.coordinator.async_request_refresh()
+    async def _write(self, on: bool) -> None:
+        await self.coordinator.client.set_web_filter_default_action(self._name, on)

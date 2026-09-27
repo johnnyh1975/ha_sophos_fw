@@ -35,6 +35,31 @@ TRANSLATIONS_DIR = BASE_DIR / "translations"
 ALLOWED_STRINGS_ONLY: set[str] = set()
 
 
+def load_json_strict(path: Path) -> tuple[dict, list[str]]:
+    """Load JSON, reporting duplicate keys instead of silently dropping them.
+
+    json.load() keeps only the LAST occurrence of a duplicated key. In a
+    translation file that means an earlier block (e.g. a whole
+    "entity.sensor" section) vanishes without any error. That exact failure
+    removed 23 entity translations in v1.0.2 — and it went unnoticed because
+    all three files were broken the same way, so they still matched each
+    other. Returns (data, list of "path.to.key" duplicates).
+    """
+    duplicates: list[str] = []
+
+    def hook(pairs):
+        seen: set[str] = set()
+        for key, _ in pairs:
+            if key in seen:
+                duplicates.append(key)
+            seen.add(key)
+        return dict(pairs)
+
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f, object_pairs_hook=hook)
+    return data, duplicates
+
+
 def flatten_keys(d: dict, prefix: str = "") -> set[str]:
     keys: set[str] = set()
     if isinstance(d, dict):
@@ -50,20 +75,26 @@ def main() -> int:
         print(f"::error::{STRINGS_PATH} not found")
         return 1
 
-    with open(STRINGS_PATH, encoding="utf-8") as f:
-        strings_keys = flatten_keys(json.load(f))
+    had_problems = False
+
+    strings_data, strings_dups = load_json_strict(STRINGS_PATH)
+    if strings_dups:
+        had_problems = True
+        print(f"::error::strings.json has duplicate key(s) — earlier blocks are silently discarded: {sorted(set(strings_dups))}")
+    strings_keys = flatten_keys(strings_data)
 
     translation_files = sorted(TRANSLATIONS_DIR.glob("*.json"))
     if not translation_files:
         print(f"::error::No translation files found in {TRANSLATIONS_DIR}")
         return 1
 
-    had_problems = False
-
     for path in translation_files:
         lang = path.stem
-        with open(path, encoding="utf-8") as f:
-            lang_keys = flatten_keys(json.load(f))
+        lang_data, lang_dups = load_json_strict(path)
+        if lang_dups:
+            had_problems = True
+            print(f"::error::translations/{lang}.json has duplicate key(s) — earlier blocks are silently discarded: {sorted(set(lang_dups))}")
+        lang_keys = flatten_keys(lang_data)
 
         missing_in_lang = sorted(
             strings_keys - lang_keys - ALLOWED_STRINGS_ONLY

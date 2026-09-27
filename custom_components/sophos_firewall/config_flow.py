@@ -1,521 +1,468 @@
 """Config flow for the Sophos Firewall integration.
 
-Three-step setup:
-  Step 1 — Connection: host, port, credentials, SSL
-  Step 2 — SNMP (optional): community string, version
-  Step 3 — Write access (optional): enable switch entities with warning
+Setup (user flow)
+    1. connection   host, port, credentials, certificate check  → entry.data
+    2. snmp         optional SNMP (community string, v2c)         → entry.options
+    3. write_access optional switches for rules / web filter      → entry.options
+    4. polling      intervals and data sources, grouped by tier   → entry.options
 
-An OptionsFlow allows changing intervals, SNMP config, and write-access
-after initial setup without removing and re-adding the integration.
+Only the connection settings live in entry.data; they are changed with the
+reconfigure flow (or the reauth flow for the password). Everything else is an
+option and changed with the options flow.
 """
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import voluptuous as vol
-
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
+from homeassistant.config_entries import (
+    SOURCE_REAUTH,
+    ConfigEntry,
+    ConfigEntryState,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
-from homeassistant.core import callback
-from homeassistant.data_entry_flow import FlowResult, section
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.data_entry_flow import section
 
 from .const import (
+    CONF_INTERVAL_FAST,
+    CONF_INTERVAL_OPERATIVE,
+    CONF_INTERVAL_REALTIME,
+    CONF_INTERVAL_STATIC,
+    CONF_POLL_SNMP_HA,
+    CONF_POLL_SNMP_HEALTH,
+    CONF_POLL_SNMP_LICENSES,
+    CONF_POLL_SNMP_SERVICES,
+    CONF_POLL_SNMP_STATS,
+    CONF_POLL_SNMP_TRAFFIC,
+    CONF_POLL_SNMP_TUNNELS,
+    CONF_POLL_XML_BACKUP,
+    CONF_POLL_XML_DHCP,
+    CONF_POLL_XML_FW_RULES,
+    CONF_POLL_XML_INTERFACES,
+    CONF_POLL_XML_WEBFILTER,
     CONF_SNMP_COMMUNITY,
     CONF_SNMP_ENABLED,
-    CONF_SNMP_VERSION,
     CONF_VERIFY_SSL,
     CONF_WRITE_ACCESS,
-    CONF_INTERVAL_REALTIME, CONF_INTERVAL_FAST,
-    CONF_INTERVAL_OPERATIVE, CONF_INTERVAL_STATIC,
-    # Polling source toggles — XML
-    CONF_POLL_XML_INTERFACES, CONF_POLL_XML_FW_RULES, CONF_POLL_XML_DHCP,
-    CONF_POLL_XML_WEBFILTER, CONF_POLL_XML_ZONES, CONF_POLL_XML_BACKUP,
-    CONF_POLL_XML_ADMIN,
-    # Polling source toggles — SNMP
-    CONF_POLL_SNMP_STATS, CONF_POLL_SNMP_SERVICES, CONF_POLL_SNMP_TUNNELS,
-    CONF_POLL_SNMP_HEALTH, CONF_POLL_SNMP_HA, CONF_POLL_SNMP_LICENSES,
-    CONF_POLL_SNMP_DEVICE,
-    # Defaults
+    CONFIG_ENTRY_VERSION,
+    DEFAULT_INTERVAL_FAST,
+    DEFAULT_INTERVAL_OPERATIVE,
+    DEFAULT_INTERVAL_REALTIME,
+    DEFAULT_INTERVAL_STATIC,
+    DEFAULT_POLL_SNMP_HA,
+    DEFAULT_POLL_SNMP_HEALTH,
+    DEFAULT_POLL_SNMP_LICENSES,
+    DEFAULT_POLL_SNMP_SERVICES,
+    DEFAULT_POLL_SNMP_STATS,
+    DEFAULT_POLL_SNMP_TRAFFIC,
+    DEFAULT_POLL_SNMP_TUNNELS,
+    DEFAULT_POLL_XML_BACKUP,
+    DEFAULT_POLL_XML_DHCP,
+    DEFAULT_POLL_XML_FW_RULES,
+    DEFAULT_POLL_XML_INTERFACES,
+    DEFAULT_POLL_XML_WEBFILTER,
     DEFAULT_PORT,
     DEFAULT_SNMP_COMMUNITY,
-    DEFAULT_SNMP_VERSION,
-    DEFAULT_INTERVAL_REALTIME, DEFAULT_INTERVAL_FAST,
-    DEFAULT_INTERVAL_OPERATIVE, DEFAULT_INTERVAL_STATIC,
-    DEFAULT_POLL_XML_INTERFACES, DEFAULT_POLL_XML_FW_RULES, DEFAULT_POLL_XML_DHCP,
-    DEFAULT_POLL_XML_WEBFILTER, DEFAULT_POLL_XML_BACKUP,
-    DEFAULT_POLL_SNMP_STATS, DEFAULT_POLL_SNMP_SERVICES, DEFAULT_POLL_SNMP_TUNNELS,
-    DEFAULT_POLL_SNMP_HEALTH, DEFAULT_POLL_SNMP_HA, DEFAULT_POLL_SNMP_LICENSES,
+    DEFAULT_USERNAME,
     DOMAIN,
 )
-from .snmp_client import SNMPClient
-from .sophos_client import SophosAuthError, SophosAPIError, SophosClient
+from . import session as xml_session
+from .snmp_client import SNMPClient, SophosSNMPError
+from .sophos_client import (
+    SophosAccessError,
+    SophosAuthError,
+    SophosClient,
+    SophosError,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
+type Getter = Callable[[str, Any], Any]
 
-def _flatten_sections(data: dict[str, Any]) -> dict[str, Any]:
-    """Flatten nested section data into a flat dict.
 
-    When sections are used, HA returns user_input as:
-        {"realtime": {"interval_realtime": 30, "poll_xml_interfaces": True}, ...}
+def _defaults(_key: str, default: Any) -> Any:
+    return default
 
-    This flattens it to:
-        {"interval_realtime": 30, "poll_xml_interfaces": True, ...}
+
+# ── Schemas ───────────────────────────────────────────────────────────────────
+
+
+def _connection_schema(get: Getter = _defaults) -> vol.Schema:
+    host_default = get(CONF_HOST, None)
+    host_key = (
+        vol.Required(CONF_HOST) if host_default is None
+        else vol.Required(CONF_HOST, default=host_default)
+    )
+    return vol.Schema(
+        {
+            host_key: str,
+            vol.Required(CONF_PORT, default=get(CONF_PORT, DEFAULT_PORT)): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=65535)
+            ),
+            vol.Required(CONF_USERNAME, default=get(CONF_USERNAME, DEFAULT_USERNAME)): str,
+            vol.Required(CONF_PASSWORD): str,
+            vol.Required(CONF_VERIFY_SSL, default=get(CONF_VERIFY_SSL, False)): bool,
+        }
+    )
+
+
+def _snmp_fields(get: Getter = _defaults) -> dict[vol.Marker, Any]:
+    return {
+        vol.Required(CONF_SNMP_ENABLED, default=get(CONF_SNMP_ENABLED, False)): bool,
+        vol.Required(
+            CONF_SNMP_COMMUNITY, default=get(CONF_SNMP_COMMUNITY, DEFAULT_SNMP_COMMUNITY)
+        ): str,
+    }
+
+
+def _write_fields(get: Getter = _defaults) -> dict[vol.Marker, Any]:
+    return {vol.Required(CONF_WRITE_ACCESS, default=get(CONF_WRITE_ACCESS, False)): bool}
+
+
+def _polling_sections(snmp_enabled: bool, get: Getter = _defaults) -> dict[str, Any]:
+    """Polling intervals and data sources, one section per tier.
+
+    SNMP sources are only shown when SNMP is enabled.
     """
+
+    def interval(key: str, default: int, low: int, high: int) -> dict[vol.Marker, Any]:
+        return {
+            vol.Required(key, default=get(key, default)): vol.All(
+                vol.Coerce(int), vol.Range(min=low, max=high)
+            )
+        }
+
+    def toggles(*items: tuple[str, bool, bool]) -> dict[vol.Marker, Any]:
+        return {
+            vol.Required(key, default=get(key, default)): bool
+            for key, default, needs_snmp in items
+            if snmp_enabled or not needs_snmp
+        }
+
+    tiers = {
+        "realtime": {
+            **interval(CONF_INTERVAL_REALTIME, DEFAULT_INTERVAL_REALTIME, 10, 300),
+            **toggles(
+                (CONF_POLL_XML_INTERFACES, DEFAULT_POLL_XML_INTERFACES, False),
+                (CONF_POLL_SNMP_STATS, DEFAULT_POLL_SNMP_STATS, True),
+                (CONF_POLL_SNMP_SERVICES, DEFAULT_POLL_SNMP_SERVICES, True),
+                (CONF_POLL_SNMP_TRAFFIC, DEFAULT_POLL_SNMP_TRAFFIC, True),
+            ),
+        },
+        "fast": {
+            **interval(CONF_INTERVAL_FAST, DEFAULT_INTERVAL_FAST, 60, 600),
+            **toggles(
+                (CONF_POLL_SNMP_TUNNELS, DEFAULT_POLL_SNMP_TUNNELS, True),
+                (CONF_POLL_SNMP_HA, DEFAULT_POLL_SNMP_HA, True),
+            ),
+        },
+        "operative": {
+            **interval(CONF_INTERVAL_OPERATIVE, DEFAULT_INTERVAL_OPERATIVE, 60, 3600),
+            **toggles(
+                (CONF_POLL_XML_FW_RULES, DEFAULT_POLL_XML_FW_RULES, False),
+                (CONF_POLL_SNMP_HEALTH, DEFAULT_POLL_SNMP_HEALTH, True),
+            ),
+        },
+        "static": {
+            **interval(CONF_INTERVAL_STATIC, DEFAULT_INTERVAL_STATIC, 300, 86400),
+            **toggles(
+                (CONF_POLL_XML_DHCP, DEFAULT_POLL_XML_DHCP, False),
+                (CONF_POLL_XML_WEBFILTER, DEFAULT_POLL_XML_WEBFILTER, False),
+                (CONF_POLL_XML_BACKUP, DEFAULT_POLL_XML_BACKUP, False),
+                (CONF_POLL_SNMP_LICENSES, DEFAULT_POLL_SNMP_LICENSES, True),
+            ),
+        },
+    }
+    return {
+        name: section(vol.Schema(fields), {"collapsed": False})
+        for name, fields in tiers.items()
+    }
+
+
+def _flatten(user_input: Mapping[str, Any]) -> dict[str, Any]:
+    """Flatten section input ({"realtime": {...}, ...}) into one dict."""
     flat: dict[str, Any] = {}
-    for key, value in data.items():
-        if isinstance(value, dict):
+    for key, value in user_input.items():
+        if isinstance(value, Mapping):
             flat.update(value)
         else:
             flat[key] = value
     return flat
 
 
-def _polling_schema(snmp_enabled: bool, cur: Any) -> vol.Schema:
-    """Build the polling configuration schema using HA Sections API.
-
-    Sections provide visual grouping with titles in the HA UI (HA 2024.9+).
-    Each section is collapsed=False so all options are visible by default.
-
-    "Einmalig beim Start" fields (admin, device_info) are always enabled.
-    Zones (CONF_POLL_XML_ZONES) default to False — the data is fetched but
-    no entities are created yet. Activating it is only useful for future
-    zone-based automations; a UI hint in translations makes this clear.
-
-    Args:
-        snmp_enabled: Whether to include SNMP source toggles.
-        cur: Callable(key, default) → current value, or {} for first-time.
-    """
-    def _get(key: str, default: Any) -> Any:
-        if callable(cur):
-            return cur(key, default)
-        return default
-
-    # ── ⚡ Echtzeit ──────────────────────────────────────────────────────────
-    realtime_fields: dict = {
-        vol.Optional(CONF_INTERVAL_REALTIME,
-            default=_get(CONF_INTERVAL_REALTIME, DEFAULT_INTERVAL_REALTIME)):
-            vol.All(int, vol.Range(min=10, max=300)),
-        vol.Optional(CONF_POLL_XML_INTERFACES,
-            default=_get(CONF_POLL_XML_INTERFACES, DEFAULT_POLL_XML_INTERFACES)): bool,
-    }
-    if snmp_enabled:
-        realtime_fields[vol.Optional(CONF_POLL_SNMP_STATS,
-            default=_get(CONF_POLL_SNMP_STATS, DEFAULT_POLL_SNMP_STATS))] = bool
-        realtime_fields[vol.Optional(CONF_POLL_SNMP_SERVICES,
-            default=_get(CONF_POLL_SNMP_SERVICES, DEFAULT_POLL_SNMP_SERVICES))] = bool
-
-    # ── 🔄 Schnell ───────────────────────────────────────────────────────────
-    fast_fields: dict = {
-        vol.Optional(CONF_INTERVAL_FAST,
-            default=_get(CONF_INTERVAL_FAST, DEFAULT_INTERVAL_FAST)):
-            vol.All(int, vol.Range(min=60, max=600)),
-    }
-    if snmp_enabled:
-        fast_fields[vol.Optional(CONF_POLL_SNMP_TUNNELS,
-            default=_get(CONF_POLL_SNMP_TUNNELS, DEFAULT_POLL_SNMP_TUNNELS))] = bool
-        fast_fields[vol.Optional(CONF_POLL_SNMP_HA,
-            default=_get(CONF_POLL_SNMP_HA, DEFAULT_POLL_SNMP_HA))] = bool
-
-    # ── 🔧 Operativ ──────────────────────────────────────────────────────────
-    operative_fields: dict = {
-        vol.Optional(CONF_INTERVAL_OPERATIVE,
-            default=_get(CONF_INTERVAL_OPERATIVE, DEFAULT_INTERVAL_OPERATIVE)):
-            vol.All(int, vol.Range(min=60, max=3600)),
-        vol.Optional(CONF_POLL_XML_FW_RULES,
-            default=_get(CONF_POLL_XML_FW_RULES, DEFAULT_POLL_XML_FW_RULES)): bool,
-    }
-    if snmp_enabled:
-        operative_fields[vol.Optional(CONF_POLL_SNMP_HEALTH,
-            default=_get(CONF_POLL_SNMP_HEALTH, DEFAULT_POLL_SNMP_HEALTH))] = bool
-
-    # ── 🗄 Statisch ──────────────────────────────────────────────────────────
-    static_fields: dict = {
-        vol.Optional(CONF_INTERVAL_STATIC,
-            default=_get(CONF_INTERVAL_STATIC, DEFAULT_INTERVAL_STATIC)):
-            vol.All(int, vol.Range(min=300, max=86400)),
-        vol.Optional(CONF_POLL_XML_DHCP,
-            default=_get(CONF_POLL_XML_DHCP, DEFAULT_POLL_XML_DHCP)): bool,
-        vol.Optional(CONF_POLL_XML_WEBFILTER,
-            default=_get(CONF_POLL_XML_WEBFILTER, DEFAULT_POLL_XML_WEBFILTER)): bool,
-        vol.Optional(CONF_POLL_XML_BACKUP,
-            default=_get(CONF_POLL_XML_BACKUP, DEFAULT_POLL_XML_BACKUP)): bool,
-    }
-    if snmp_enabled:
-        static_fields[vol.Optional(CONF_POLL_SNMP_LICENSES,
-            default=_get(CONF_POLL_SNMP_LICENSES, DEFAULT_POLL_SNMP_LICENSES))] = bool
-
-    # Sections as plain string keys (not vol.Optional) — HA requirement
-    return vol.Schema({
-        "realtime": section(vol.Schema(realtime_fields),  {"collapsed": False}),
-        "fast":     section(vol.Schema(fast_fields),      {"collapsed": False}),
-        "operative":section(vol.Schema(operative_fields), {"collapsed": False}),
-        "static":   section(vol.Schema(static_fields),    {"collapsed": False}),
-    })
+# ── Connection tests ──────────────────────────────────────────────────────────
 
 
-def _polling_placeholders() -> dict[str, str]:
-    """Return description_placeholders for the polling step."""
-    return {
-        "realtime_default":  str(DEFAULT_INTERVAL_REALTIME),
-        "fast_default":      str(DEFAULT_INTERVAL_FAST),
-        "operative_default": str(DEFAULT_INTERVAL_OPERATIVE),
-        "static_default":    str(DEFAULT_INTERVAL_STATIC),
-    }
+async def async_test_xml_connection(
+    hass: HomeAssistant, data: Mapping[str, Any]
+) -> dict[str, str]:
+    """Try the XML API with the given settings; return an error dict."""
+    session = xml_session.create_xml_session(data.get(CONF_VERIFY_SSL, False))
+    client = SophosClient(
+        session,
+        host=data[CONF_HOST],
+        port=data[CONF_PORT],
+        username=data[CONF_USERNAME],
+        password=data[CONF_PASSWORD],
+    )
+    try:
+        await client.test_connection()
+    except SophosAuthError:
+        return {"base": "invalid_auth"}
+    except SophosAccessError:
+        return {"base": "api_access_denied"}
+    except SophosError:
+        return {"base": "cannot_connect"}
+    except Exception:
+        _LOGGER.exception("Unexpected error during XML connection test")
+        return {"base": "unknown"}
+    finally:
+        await session.close()
+    return {}
 
 
-STEP_CONNECTION_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_HOST): str,
-        vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
-        vol.Required(CONF_USERNAME, default="admin"): str,
-        vol.Required(CONF_PASSWORD): str,
-        vol.Required(CONF_VERIFY_SSL, default=False): bool,
-    }
-)
+async def async_test_snmp_connection(
+    hass: HomeAssistant, host: str, community: str
+) -> dict[str, str]:
+    """Try SNMP with the given settings; return an error dict."""
+    client = SNMPClient(host, community=community)
+    try:
+        await client.preload(hass)
+        await client.test_connection()
+    except SophosSNMPError:
+        return {"base": "snmp_cannot_connect"}
+    except Exception:
+        _LOGGER.exception("Unexpected error during SNMP connection test")
+        return {"base": "unknown"}
+    return {}
 
-STEP_SNMP_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_SNMP_ENABLED, default=False): bool,
-        vol.Optional(CONF_SNMP_COMMUNITY, default=DEFAULT_SNMP_COMMUNITY): str,
-        vol.Optional(CONF_SNMP_VERSION, default=DEFAULT_SNMP_VERSION): vol.In(["1", "2c"]),
-    }
-)
 
-STEP_WRITE_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_WRITE_ACCESS, default=False): bool,
-    }
-)
+# ── Config flow ───────────────────────────────────────────────────────────────
 
 
 class SophosFirewallConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle the initial setup of the Sophos Firewall integration."""
+    """Set up a Sophos Firewall."""
 
-    VERSION = 1
-    _data: dict[str, Any]  # accumulates data across steps
+    VERSION = CONFIG_ENTRY_VERSION
+
+    def __init__(self) -> None:
+        self._connection: dict[str, Any] = {}
+        self._options: dict[str, Any] = {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Step 1: Collect and validate connection parameters."""
+    ) -> ConfigFlowResult:
+        """Step 1: connection settings."""
         errors: dict[str, str] = {}
-        self._data = {}
-
         if user_input is not None:
-            # Prevent duplicate entries for the same host
-            await self.async_set_unique_id(
-                f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}"
+            self._async_abort_entries_match(
+                {CONF_HOST: user_input[CONF_HOST], CONF_PORT: user_input[CONF_PORT]}
             )
-            self._abort_if_unique_id_configured()
-
-            # Test connectivity
-            errors = await self._test_xml_connection(user_input)
+            errors = await async_test_xml_connection(self.hass, user_input)
             if not errors:
-                self._data.update(user_input)
+                await self.async_set_unique_id(
+                    f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}"
+                )
+                self._abort_if_unique_id_configured()
+                self._connection = user_input
                 return await self.async_step_snmp()
 
         return self.async_show_form(
             step_id="user",
-            data_schema=STEP_CONNECTION_SCHEMA,
+            data_schema=self.add_suggested_values_to_schema(
+                _connection_schema(), _without_password(user_input)
+            ),
             errors=errors,
-            description_placeholders={"default_port": str(DEFAULT_PORT)},
         )
 
     async def async_step_snmp(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Step 2: Optional SNMP configuration."""
+    ) -> ConfigFlowResult:
+        """Step 2: optional SNMP."""
         errors: dict[str, str] = {}
-
         if user_input is not None:
-            if user_input.get(CONF_SNMP_ENABLED):
-                # Merge step-1 data (contains CONF_HOST) with step-2 input
-                merged = {**self._data, **user_input}
-                errors = await self._test_snmp_connection(merged)
+            if user_input[CONF_SNMP_ENABLED]:
+                errors = await async_test_snmp_connection(
+                    self.hass, self._connection[CONF_HOST], user_input[CONF_SNMP_COMMUNITY]
+                )
             if not errors:
-                self._data.update(user_input)
+                self._options.update(user_input)
                 return await self.async_step_write_access()
 
         return self.async_show_form(
             step_id="snmp",
-            data_schema=STEP_SNMP_SCHEMA,
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(_snmp_fields()), user_input
+            ),
             errors=errors,
         )
 
     async def async_step_write_access(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Step 3: Optional write-access (enables switch entities)."""
+    ) -> ConfigFlowResult:
+        """Step 3: optional write access."""
         if user_input is not None:
-            self._data.update(user_input)
+            self._options.update(user_input)
             return await self.async_step_polling()
-
-        return self.async_show_form(
-            step_id="write_access",
-            data_schema=STEP_WRITE_SCHEMA,
-            description_placeholders={},
-        )
+        return self.async_show_form(step_id="write_access", data_schema=vol.Schema(_write_fields()))
 
     async def async_step_polling(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Step 4: Polling intervals and data sources — grouped by frequency."""
-        snmp_enabled = self._data.get(CONF_SNMP_ENABLED, False)
-
+    ) -> ConfigFlowResult:
+        """Step 4: polling intervals and data sources."""
         if user_input is not None:
-            # Flatten sections before storing
-            flat = _flatten_sections(user_input)
-            self._data.update(flat)
-            # Always enable once-only fields
-            self._data[CONF_POLL_XML_ZONES]   = True
-            self._data[CONF_POLL_XML_ADMIN]   = True
-            self._data[CONF_POLL_SNMP_DEVICE] = True
+            self._options.update(_flatten(user_input))
             return self.async_create_entry(
-                title=self._data[CONF_HOST],
-                data=self._data,
+                title=self._connection[CONF_HOST],
+                data=self._connection,
+                options=self._options,
             )
-
-        schema = _polling_schema(snmp_enabled, {})
         return self.async_show_form(
             step_id="polling",
-            data_schema=schema,
-            description_placeholders=_polling_placeholders(),
+            data_schema=vol.Schema(_polling_sections(self._options[CONF_SNMP_ENABLED])),
         )
 
-    async def async_step_reauth(
-        self, entry_data: dict[str, Any]
-    ) -> FlowResult:
-        """Initiate re-authentication after a credential failure.
-
-        Called automatically by HA when ConfigEntryAuthFailed is raised.
-        We store the existing entry reference so async_step_reauth_confirm
-        can update only the password while keeping all other settings.
-        """
-        self._reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
+    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
+        """Start re-authentication after the firewall rejected the credentials."""
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Show re-authentication form and validate new credentials."""
+    ) -> ConfigFlowResult:
+        """Ask for the new password."""
         errors: dict[str, str] = {}
-
+        entry = self._get_reauth_entry()
         if user_input is not None:
-            test_data = {
-                **self._reauth_entry.data,
-                CONF_PASSWORD: user_input[CONF_PASSWORD],
-            }
-            errors = await self._test_xml_connection(test_data)
+            errors = await async_test_xml_connection(
+                self.hass, {**entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]}
+            )
             if not errors:
-                return self.async_update_reload_and_abort(
-                    self._reauth_entry,
-                    data_updates={CONF_PASSWORD: user_input[CONF_PASSWORD]},
-                    reason="reauth_successful",
+                return self._async_update_and_finish(
+                    entry, data={**entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]}
                 )
-
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_PASSWORD): str,
-                }
-            ),
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
             description_placeholders={
-                "host": self._reauth_entry.data.get(CONF_HOST, ""),
-                "username": self._reauth_entry.data.get(CONF_USERNAME, "admin"),
+                "host": entry.data[CONF_HOST],
+                "username": entry.data[CONF_USERNAME],
             },
             errors=errors,
         )
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Allow the user to change host/port/credentials without deleting the entry."""
-        reconfigure_entry = self._get_reconfigure_entry()
+    ) -> ConfigFlowResult:
+        """Change the connection settings of an existing entry.
+
+        Entity unique_ids do not contain host or port (since v1.1.0), so a new
+        address keeps every entity and its history.
+        """
+        entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
-
         if user_input is not None:
-            errors = await self._test_xml_connection(user_input)
+            host, port = user_input[CONF_HOST], user_input[CONF_PORT]
+            for other in self._async_current_entries(include_ignore=False):
+                if other.entry_id != entry.entry_id and (
+                    (other.data.get(CONF_HOST), other.data.get(CONF_PORT)) == (host, port)
+                    or other.unique_id == f"{host}:{port}"
+                ):
+                    return self.async_abort(reason="already_configured")
+            errors = await async_test_xml_connection(self.hass, user_input)
             if not errors:
-                return self.async_update_reload_and_abort(
-                    reconfigure_entry,
-                    data_updates=user_input,
+                return self._async_update_and_finish(
+                    entry,
+                    unique_id=f"{host}:{port}",
+                    title=host if entry.title == entry.data[CONF_HOST] else entry.title,
+                    data={**entry.data, **user_input},
                 )
-
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_HOST,
-                        default=reconfigure_entry.data.get(CONF_HOST, ""),
-                    ): str,
-                    vol.Required(
-                        CONF_PORT,
-                        default=reconfigure_entry.data.get(CONF_PORT, DEFAULT_PORT),
-                    ): int,
-                    vol.Required(
-                        CONF_USERNAME,
-                        default=reconfigure_entry.data.get(CONF_USERNAME, "admin"),
-                    ): str,
-                    vol.Required(CONF_PASSWORD): str,
-                    vol.Required(
-                        CONF_VERIFY_SSL,
-                        default=reconfigure_entry.data.get(CONF_VERIFY_SSL, False),
-                    ): bool,
-                }
-            ),
+            data_schema=_connection_schema(lambda key, default: entry.data.get(key, default)),
+            description_placeholders={"host": entry.data[CONF_HOST]},
             errors=errors,
-            description_placeholders={
-                "host": reconfigure_entry.data.get(CONF_HOST, ""),
-            },
         )
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _async_update_and_finish(
+        self, entry: ConfigEntry, **changes: Any
+    ) -> ConfigFlowResult:
+        """Store new connection data and reload the entry exactly once.
 
-    @staticmethod
-    async def _test_xml_connection(data: dict[str, Any]) -> dict[str, str]:
-        """Return error dict (empty = success)."""
-        client = SophosClient(
-            host=data[CONF_HOST],
-            port=data[CONF_PORT],
-            username=data[CONF_USERNAME],
-            password=data[CONF_PASSWORD],
-            verify_ssl=data.get(CONF_VERIFY_SSL, False),
-        )
-        try:
-            async with client:
-                await client.test_connection()
-        except SophosAuthError:
-            return {"base": "invalid_auth"}
-        except SophosAPIError:
-            return {"base": "cannot_connect"}
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("Unexpected error during XML connection test")
-            return {"base": "unknown"}
-        return {}
-
-    @staticmethod
-    async def _test_snmp_connection(data: dict[str, Any]) -> dict[str, str]:
-        """Return error dict (empty = success)."""
-        # Check puresnmp availability without blocking the event loop.
-        # The import is deferred to an executor thread.
-        import asyncio
-        import concurrent.futures
-
-        def _check_import() -> bool:
-            try:
-                import puresnmp  # noqa: F401
-                return True
-            except ImportError:
-                return False
-
-        loop = asyncio.get_running_loop()
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            available = await loop.run_in_executor(pool, _check_import)
-
-        if not available:
-            _LOGGER.warning(
-                "puresnmp not yet installed — it will be installed on HA restart. "
-                "Skip SNMP for now and enable it later via Options."
-            )
-            return {"base": "snmp_not_available"}
-
-        client = SNMPClient(
-            host=data[CONF_HOST],
-            community=data.get(CONF_SNMP_COMMUNITY, DEFAULT_SNMP_COMMUNITY),
-            version=data.get(CONF_SNMP_VERSION, DEFAULT_SNMP_VERSION),
-        )
-        try:
-            # preload() must run before any get/walk call — it patches the
-            # puresnmp security-plugin loader (avoids blocking I/O) and
-            # creates the underlying puresnmp Client instance. Without it,
-            # _get_client() raises RuntimeError, which test_connection()
-            # silently turns into "unreachable" (see _get()'s broad except).
-            # That previously made the SNMP test fail unconditionally —
-            # reported in GitHub issue by taracraft (S2S/multi-firewall SNMP).
-            await client.preload()
-            reachable = await client.test_connection()
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("Unexpected error during SNMP connection test")
-            return {"base": "snmp_cannot_connect"}
-        if not reachable:
-            return {"base": "snmp_cannot_connect"}
-        return {}
+        A loaded entry has an update listener that reloads it when its data
+        changes (__init__.py); Home Assistant's async_update_reload_and_abort
+        would reload it a second time, and warns about exactly that from
+        2026.x on. An entry that is not loaded (setup failed) has no listener,
+        and unchanged data (the same password entered again) does not make
+        the listener reload — both are reloaded here, so polling that stopped
+        on rejected credentials always starts again.
+        """
+        reason = "reauth_successful" if self.source == SOURCE_REAUTH else "reconfigure_successful"
+        if entry.state is not ConfigEntryState.LOADED:
+            return self.async_update_reload_and_abort(entry, reason=reason, **changes)
+        data_changed = changes["data"] != dict(entry.data)
+        self.hass.config_entries.async_update_entry(entry, **changes)
+        if not data_changed:
+            self.hass.config_entries.async_schedule_reload(entry.entry_id)
+        return self.async_abort(reason=reason)
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> "SophosOptionsFlow":
+    def async_get_options_flow(config_entry: ConfigEntry) -> SophosOptionsFlow:
         """Return the options flow handler."""
-        return SophosOptionsFlow(config_entry)
+        return SophosOptionsFlow()
+
+
+def _without_password(user_input: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Pre-fill a re-shown form, but never echo the password back."""
+    if user_input is None:
+        return None
+    return {k: v for k, v in user_input.items() if k != CONF_PASSWORD}
 
 
 class SophosOptionsFlow(OptionsFlow):
-    """Options flow: single step combining intervals, SNMP and polling sources."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        self._entry = config_entry
-
-    def _cur(self, key: str, default: Any) -> Any:
-        opts = self._entry.options
-        data = self._entry.data
-        return opts.get(key, data.get(key, default))
+    """Change SNMP, write access and polling — one form."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Single step: SNMP credentials + polling intervals + sources."""
+    ) -> ConfigFlowResult:
+        """Show and store the options."""
         errors: dict[str, str] = {}
+        options = self.config_entry.options
+        flat: dict[str, Any] = {}
 
-        snmp_enabled = (
-            user_input.get(CONF_SNMP_ENABLED, False)
-            if user_input is not None
-            else self._cur(CONF_SNMP_ENABLED, False)
-        )
+        def get(key: str, default: Any) -> Any:
+            # Entered values first, so a form re-shown after an error keeps
+            # them (HA 2025.x does not apply suggested values inside sections).
+            return flat.get(key, options.get(key, default))
 
         if user_input is not None:
-            if user_input.get(CONF_SNMP_ENABLED):
-                merged = {**self._entry.data, **user_input}
-                errors = await SophosFirewallConfigFlow._test_snmp_connection(merged)
-
+            flat = _flatten(user_input)
+            snmp_changed = not options.get(CONF_SNMP_ENABLED) or flat[
+                CONF_SNMP_COMMUNITY
+            ] != options.get(CONF_SNMP_COMMUNITY)
+            if flat[CONF_SNMP_ENABLED] and snmp_changed:
+                errors = await async_test_snmp_connection(
+                    self.hass, self.config_entry.data[CONF_HOST], flat[CONF_SNMP_COMMUNITY]
+                )
             if not errors:
-                # Sections return nested dicts — flatten for storage
-                flat = _flatten_sections(user_input)
+                return self.async_create_entry(data={**options, **flat})
 
-                new_data = {
-                    **self._entry.data,
-                    CONF_SNMP_ENABLED:   flat.get(CONF_SNMP_ENABLED, False),
-                    CONF_SNMP_COMMUNITY: flat.get(CONF_SNMP_COMMUNITY, DEFAULT_SNMP_COMMUNITY),
-                    CONF_SNMP_VERSION:   flat.get(CONF_SNMP_VERSION, DEFAULT_SNMP_VERSION),
-                    CONF_WRITE_ACCESS:   flat.get(CONF_WRITE_ACCESS, False),
-                    # Hardcode once-only fields — always True
-                    CONF_POLL_XML_ZONES:  True,
-                    CONF_POLL_XML_ADMIN:  True,
-                    CONF_POLL_SNMP_DEVICE: True,
-                }
-                self.hass.config_entries.async_update_entry(self._entry, data=new_data)
-                return self.async_create_entry(title="", data=flat)
-
-        snmp_cred_fields = {
-            vol.Optional(CONF_SNMP_ENABLED,
-                default=self._cur(CONF_SNMP_ENABLED, False)): bool,
-            vol.Optional(CONF_SNMP_COMMUNITY,
-                default=self._cur(CONF_SNMP_COMMUNITY, DEFAULT_SNMP_COMMUNITY)): str,
-            vol.Optional(CONF_SNMP_VERSION,
-                default=self._cur(CONF_SNMP_VERSION, DEFAULT_SNMP_VERSION)): vol.In(["1", "2c"]),
-            vol.Optional(CONF_WRITE_ACCESS,
-                default=self._cur(CONF_WRITE_ACCESS, False)): bool,
+        fields: dict[Any, Any] = {
+            **_snmp_fields(get),
+            **_write_fields(get),
+            # All sources are shown, so SNMP sources can be chosen in the
+            # same step that enables SNMP. They have no effect without SNMP.
+            **_polling_sections(True, get),
         }
-        polling = _polling_schema(snmp_enabled, self._cur)
-
+        schema = vol.Schema(fields)
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({**snmp_cred_fields, **polling.schema}),
+            data_schema=self.add_suggested_values_to_schema(schema, user_input),
             errors=errors,
-            description_placeholders=_polling_placeholders(),
         )
-

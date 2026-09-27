@@ -1,0 +1,148 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "interface_status": {
+        "default": "mdi:ethernet",
+        "state": {
+          "off": "mdi:ethernet-off"
+        }
+      },
+      "firewall_rule_status": {
+        "default": "mdi:shield-outline",
+        "state": {
+          "on": "mdi:shield-check-outline",
+          "off": "mdi:shield-off-outline"
+        }
+      },
+      "vpn_tunnel_status": {
+        "default": "mdi:vpn"
+      },
+      "ha_enabled": {
+        "default": "mdi:server-network",
+        "state": {
+          "off": "mdi:server-network-off"
+        }
+      }
+    },
+    "button": {
+      "trigger_backup": {
+        "default": "mdi:backup-restore"
+      }
+    },
+    "sensor": {
+      "backup_frequency": {
+        "default": "mdi:backup-restore"
+      },
+      "cpu_core": {
+        "default": "mdi:cpu-64-bit"
+      },
+      "cpu_usage": {
+        "default": "mdi:cpu-64-bit"
+      },
+      "dhcp_leases": {
+        "default": "mdi:server-network",
+        "state": {
+          "off": "mdi:server-network-off"
+        }
+      },
+      "disk_percent": {
+        "default": "mdi:harddisk"
+      },
+      "fan_speed": {
+        "default": "mdi:fan"
+      },
+      "ftp_hits": {
+        "default": "mdi:folder-network-outline"
+      },
+      "ha_current_state": {
+        "default": "mdi:server-network",
+        "state": {
+          "faulty": "mdi:server-network-off"
+        }
+      },
+      "ha_peer_state": {
+        "default": "mdi:server-network-outline",
+        "state": {
+          "faulty": "mdi:server-network-off"
+        }
+      },
+      "http_hits": {
+        "default": "mdi:web"
+      },
+      "imap_hits": {
+        "default": "mdi:email-sync-outline"
+      },
+      "ips_version": {
+        "default": "mdi:shield-bug-outline"
+      },
+      "license": {
+        "default": "mdi:license"
+      },
+      "licenses_summary": {
+        "default": "mdi:license"
+      },
+      "live_users": {
+        "default": "mdi:account-multiple-outline"
+      },
+      "memory_percent": {
+        "default": "mdi:memory"
+      },
+      "pop3_hits": {
+        "default": "mdi:email-arrow-left-outline"
+      },
+      "service": {
+        "default": "mdi:application-cog-outline"
+      },
+      "services_summary": {
+        "default": "mdi:application-cog-outline"
+      },
+      "smtp_hits": {
+        "default": "mdi:email-outline"
+      },
+      "swap_percent": {
+        "default": "mdi:swap-horizontal"
+      },
+      "traffic_rx_bytes": {
+        "default": "mdi:tray-arrow-down"
+      },
+      "traffic_rx_rate": {
+        "default": "mdi:download-network-outline"
+      },
+      "traffic_tx_bytes": {
+        "default": "mdi:tray-arrow-up"
+      },
+      "traffic_tx_rate": {
+        "default": "mdi:upload-network-outline"
+      },
+      "uptime": {
+        "default": "mdi:clock-start"
+      },
+      "web_filter_default_action": {
+        "default": "mdi:filter-outline",
+        "state": {
+          "allow": "mdi:filter-check-outline",
+          "deny": "mdi:filter-remove-outline"
+        }
+      },
+      "webcat_version": {
+        "default": "mdi:web-check"
+      }
+    },
+    "switch": {
+      "firewall_rule": {
+        "default": "mdi:shield-outline",
+        "state": {
+          "on": "mdi:shield-check-outline",
+          "off": "mdi:shield-off-outline"
+        }
+      },
+      "web_filter_policy": {
+        "default": "mdi:filter-outline",
+        "state": {
+          "on": "mdi:filter-check-outline",
+          "off": "mdi:filter-remove-outline"
+        }
+      }
+    }
+  }
+}

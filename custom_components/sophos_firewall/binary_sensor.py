@@ -1,371 +1,256 @@
-"""Binary sensor platform for Sophos Firewall integration.
-
-Dynamic entities (per interface, per tunnel, per DHCP server) are registered
-in two phases to support lazy loading.
-
-Phase 1 (setup):  Nothing — all binary sensors are dynamic.
-Phase 2 (update): Entities created from coordinator data on the first
-                  successful fetch, via a coordinator listener.
-
-Note: Service and license sensors have been replaced by the aggregate
-SophosServicesSummarySensor and SophosLicensesSummarySensor in sensor.py.
-"""
+"""Binary sensor platform for the Sophos Firewall integration."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.restore_state import RestoreEntity
 
+from . import SophosConfigEntry
 from .const import (
     CONF_SNMP_ENABLED,
     CONF_WRITE_ACCESS,
-    DATA_INTERFACES,
-    DATA_FIREWALL_RULES,
-    DATA_SNMP_HA,
-    DATA_SNMP_HEALTH,
-    DATA_SNMP_TUNNELS,
+    EP_FIREWALL_RULES,
+    EP_HA,
+    EP_HEALTH,
+    EP_INTERFACES,
+    EP_TUNNELS,
+    VPN_ACTIVATED,
+    VPN_STATUS_ACTIVE,
+    VPN_STATUS_PARTIALLY_ACTIVE,
 )
-from .coordinator import SophosCoordinator
-from .entity import SophosEntity, field_str
-
-_LOGGER = logging.getLogger(__name__)
+from .coordinator import SophosSnmpCoordinator, SophosXmlCoordinator
+from .entity import (
+    DynamicFamily,
+    SophosSnmpEntity,
+    SophosXmlEntity,
+    async_add_static_entities,
+    async_remove_entities,
+    async_remove_stale_entities,
+    async_setup_dynamic_entities,
+)
+from .models import FirewallRule, Interface, SnmpData, VpnTunnel
 
 PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: SophosConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up binary sensor entities.
+    """Set up binary sensors."""
+    runtime = entry.runtime_data
+    write_access: bool = entry.options.get(CONF_WRITE_ACCESS, False)
 
-    All binary sensors are dynamic — created from coordinator data on the
-    first successful fetch, via a coordinator listener.
-    """
-    coordinator: SophosCoordinator = entry.runtime_data
-    snmp_enabled: bool = entry.data.get(CONF_SNMP_ENABLED, False)
-    write_access: bool = entry.data.get(CONF_WRITE_ACCESS, False)
-    added_ids: set[str] = set()
-
-    # ── Static SNMP entities (always one per entry when SNMP is enabled) ───────
-    if snmp_enabled:
-        async_add_entities([SophosHAEnabledSensor(coordinator)])
-
-    def _add_dynamic_entities() -> None:
-        data = coordinator.data
-        if not data:
-            return
-
-        reg = er.async_get(coordinator.hass)
-        new_entities: list[BinarySensorEntity] = []
-
-        # ── Interfaces ────────────────────────────────────────────────────────
-        current_iface_names: set[str] = {
-            i.get("Name", "") for i in data.get(DATA_INTERFACES, [])
-        }
-        for iface in data.get(DATA_INTERFACES, []):
-            uid = f"{entry.entry_id}_iface_{iface.get('Name','')}"
-            if uid not in added_ids:
-                added_ids.add(uid)
-                new_entities.append(SophosInterfaceSensor(coordinator, iface))
-
-        # Remove stale interface sensors
-        for uid in list(added_ids):
-            if not uid.startswith(f"{entry.entry_id}_iface_"):
-                continue
-            name = uid[len(f"{entry.entry_id}_iface_"):]
-            if name not in current_iface_names:
-                entity_id = reg.async_get_entity_id("binary_sensor", "sophos_firewall", uid)
-                if entity_id:
-                    reg.async_remove(entity_id)
-                added_ids.discard(uid)
-
-        # ── Firewall rules (read-only, no write_access) ───────────────────────
-        # Mit write_access: Switch in switch.py übernimmt Zustand + Steuerung.
-        # Ohne write_access: binary_sensor als Nur-Lese-Anzeige (EntityCategory.CONFIG).
-        if not write_access:
-            current_rule_names: set[str] = {
-                r.get("Name", "") for r in data.get(DATA_FIREWALL_RULES, [])
-            }
-            for rule in data.get(DATA_FIREWALL_RULES, []):
-                uid = f"{entry.entry_id}_fwrule_{rule.get('Name','')}"
-                if uid not in added_ids:
-                    added_ids.add(uid)
-                    new_entities.append(SophosFirewallRuleSensor(coordinator, rule))
-
-            # Remove stale rule sensors
-            for uid in list(added_ids):
-                if not uid.startswith(f"{entry.entry_id}_fwrule_"):
-                    continue
-                name = uid[len(f"{entry.entry_id}_fwrule_"):]
-                if name not in current_rule_names:
-                    entity_id = reg.async_get_entity_id("binary_sensor", "sophos_firewall", uid)
-                    if entity_id:
-                        reg.async_remove(entity_id)
-                    added_ids.discard(uid)
-
-        # ── VPN tunnels (SNMP) ────────────────────────────────────────────────
-        if snmp_enabled:
-            current_tunnel_idxs: set[str] = {
-                str(t.get("index", "")) for t in data.get(DATA_SNMP_TUNNELS, [])
-            }
-            for tunnel in data.get(DATA_SNMP_TUNNELS, []):
-                uid = f"{entry.entry_id}_vpn_{tunnel.get('index','')}"
-                if uid not in added_ids:
-                    added_ids.add(uid)
-                    new_entities.append(SophosVPNTunnelSensor(coordinator, tunnel))
-
-            # Remove stale VPN sensors
-            for uid in list(added_ids):
-                if not uid.startswith(f"{entry.entry_id}_vpn_"):
-                    continue
-                idx = uid[len(f"{entry.entry_id}_vpn_"):]
-                if idx not in current_tunnel_idxs:
-                    entity_id = reg.async_get_entity_id("binary_sensor", "sophos_firewall", uid)
-                    if entity_id:
-                        reg.async_remove(entity_id)
-                    added_ids.discard(uid)
-
-            # ── PSU status sensors (physical appliances only) ──────────────────
-            # psus dict is empty on virtual appliances (SFVH) — no entities created.
-            health = data.get(DATA_SNMP_HEALTH, {})
-            current_psu_keys: set[str] = set(health.get("psus", {}).keys())
-            for psu_key in health.get("psus", {}):
-                uid = f"{entry.entry_id}_psu_{psu_key}"
-                if uid not in added_ids:
-                    added_ids.add(uid)
-                    new_entities.append(SophosPSUSensor(coordinator, psu_key))
-
-            # Remove stale PSU sensors
-            for uid in list(added_ids):
-                if not uid.startswith(f"{entry.entry_id}_psu_"):
-                    continue
-                psu_key = uid[len(f"{entry.entry_id}_psu_"):]
-                if psu_key not in current_psu_keys:
-                    entity_id = reg.async_get_entity_id("binary_sensor", "sophos_firewall", uid)
-                    if entity_id:
-                        reg.async_remove(entity_id)
-                    added_ids.discard(uid)
-
-        if new_entities:
-            _LOGGER.debug("Adding %d dynamic binary_sensor entities", len(new_entities))
-            async_add_entities(new_entities)
-
-    entry.async_on_unload(
-        coordinator.async_add_listener(_add_dynamic_entities)
+    xml_families: list[DynamicFamily[SophosXmlCoordinator, Any]] = [
+        DynamicFamily(
+            "iface_", EP_INTERFACES,
+            lambda d: _keyed("iface_", d.interfaces), SophosInterfaceSensor,
+        ),
+    ]
+    if write_access:
+        # The switch platform owns firewall rules; drop read-only rule sensors
+        # left over from before write access was enabled (configuration-driven,
+        # so removing the whole family is safe).
+        async_remove_stale_entities(hass, entry, "binary_sensor", "fwrule_", (), remove_all=True)
+    else:
+        xml_families.append(
+            DynamicFamily(
+                "fwrule_", EP_FIREWALL_RULES,
+                lambda d: _keyed("fwrule_", d.firewall_rules), SophosFirewallRuleSensor,
+            )
+        )
+    async_setup_dynamic_entities(
+        hass, entry, runtime.xml, "binary_sensor", async_add_entities, xml_families
     )
 
-    if coordinator.data:
-        _add_dynamic_entities()
+    if (snmp := runtime.snmp) is None:
+        if not entry.options.get(CONF_SNMP_ENABLED, False):
+            # SNMP switched off in the options (configuration-driven, see sensor.py)
+            async_remove_entities(hass, entry, "binary_sensor", ["ha_enabled"])
+            for prefix in ("vpn_", "psu_"):
+                async_remove_stale_entities(hass, entry, "binary_sensor", prefix, (), remove_all=True)
+        return
+    async_add_static_entities(
+        hass, entry, "binary_sensor", async_add_entities, [SophosHAEnabledSensor(snmp)]
+    )
+    async_setup_dynamic_entities(
+        hass, entry, snmp, "binary_sensor", async_add_entities,
+        [
+            # An empty tunnel table after a successful walk means "no IPsec
+            # connections" — this also removes the policy-table leftovers of
+            # v1.0.2 (#18) on firewalls without IPsec.
+            DynamicFamily(
+                "vpn_", EP_TUNNELS, _vpn_items, SophosVPNTunnelSensor, trust_empty=True
+            ),
+            # A failed PSU may drop out of the table — its entity must stay so
+            # alerts can fire, hence no stale removal for hardware.
+            DynamicFamily("psu_", EP_HEALTH, _psu_items, SophosPSUSensor, remove_stale=False),
+        ],
+    )
 
 
-# ── Entity classes ────────────────────────────────────────────────────────────
+def _keyed[T](prefix: str, items: dict[str, T] | None) -> dict[str, T] | None:
+    return None if items is None else {f"{prefix}{name}": item for name, item in items.items()}
 
-class SophosInterfaceSensor(SophosEntity, BinarySensorEntity, RestoreEntity):
-    """Binary sensor: network interface up/down.
 
-    RestoreEntity: shows the last known state immediately after an HA restart,
-    until the first coordinator fetch populates fresh data.
-    """
+def _vpn_items(data: SnmpData) -> dict[str, VpnTunnel] | None:
+    return None if data.tunnels is None else {f"vpn_{i}": t for i, t in data.tunnels.items()}
+
+
+def _psu_items(data: SnmpData) -> dict[str, str] | None:
+    if data.health is None:
+        return None
+    return {f"psu_{key}": key for key in data.health.psus}
+
+
+# ── XML entities ──────────────────────────────────────────────────────────────
+
+
+class SophosInterfaceSensor(SophosXmlEntity, BinarySensorEntity):
+    """Network interface up/down."""
 
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_translation_key = "interface_status"
-    _attr_icon = "mdi:ethernet"
 
-    def __init__(self, coordinator: SophosCoordinator, iface: dict[str, Any]) -> None:
-        self._iface_name = iface.get("Name", "unknown")
-        super().__init__(coordinator, unique_suffix=f"iface_{self._iface_name}")
-        self._attr_translation_placeholders = {"name": self._iface_name}
-        self._restored_is_on: bool | None = None
+    def __init__(self, coordinator: SophosXmlCoordinator, iface: Interface) -> None:
+        super().__init__(coordinator, f"iface_{iface.name}", EP_INTERFACES)
+        self._name = iface.name
+        self._attr_translation_placeholders = {"name": iface.name}
 
-    async def async_added_to_hass(self) -> None:
-        """Restore the last known state on startup."""
-        await super().async_added_to_hass()
-        last_state = await self.async_get_last_state()
-        if last_state is not None and last_state.state in ("on", "off"):
-            self._restored_is_on = last_state.state == "on"
+    def _iface(self) -> Interface | None:
+        return (self.xml.interfaces or {}).get(self._name)
 
     @property
     def is_on(self) -> bool | None:
-        if self.coordinator.data is None:
-            # No fresh data yet — fall back to restored state after restart
-            return self._restored_is_on
-        for iface in self.coordinator.data.get(DATA_INTERFACES, []):
-            if iface.get("Name") == self._iface_name:
-                return field_str(iface, "InterfaceStatus").upper() == "ON"
-        return None
+        iface = self._iface()
+        return iface.is_up if iface else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        if self.coordinator.data is None:
+        if (iface := self._iface()) is None:
             return {}
-        for iface in self.coordinator.data.get(DATA_INTERFACES, []):
-            if iface.get("Name") == self._iface_name:
-                return {
-                    "zone":            iface.get("NetworkZone"),
-                    "ipv4_assignment": iface.get("IPv4Assignment"),
-                    "speed":           iface.get("InterfaceSpeed"),
-                    "mtu":             iface.get("MTU"),
-                }
-        return {}
+        return {
+            "zone": iface.zone,
+            "ipv4_assignment": iface.ipv4_assignment,
+            "speed": iface.speed,
+            "mtu": iface.mtu,
+        }
 
 
-class SophosFirewallRuleSensor(SophosEntity, BinarySensorEntity):
-    """Binary sensor: firewall rule enabled/disabled.
-
-    EntityCategory.CONFIG — erscheint nur im Konfigurationsbereich der Geräte-Seite.
-    """
+class SophosFirewallRuleSensor(SophosXmlEntity, BinarySensorEntity):
+    """Firewall rule enabled/disabled (read-only, used without write access)."""
 
     _attr_translation_key = "firewall_rule_status"
-    _attr_entity_category = EntityCategory.CONFIG
-    _attr_icon = "mdi:shield-outline"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # One entity per rule — often dozens, rarely all of interest.
+    _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: SophosCoordinator, rule: dict[str, Any]) -> None:
-        self._rule_name = rule.get("Name", "unknown")
-        super().__init__(coordinator, unique_suffix=f"fwrule_{self._rule_name}")
-        self._attr_translation_placeholders = {"name": self._rule_name}
+    def __init__(self, coordinator: SophosXmlCoordinator, rule: FirewallRule) -> None:
+        super().__init__(coordinator, f"fwrule_{rule.name}", EP_FIREWALL_RULES)
+        self._name = rule.name
+        self._attr_translation_placeholders = {"name": rule.name}
+
+    def _rule(self) -> FirewallRule | None:
+        return (self.xml.firewall_rules or {}).get(self._name)
 
     @property
     def is_on(self) -> bool | None:
-        if self.coordinator.data is None:
-            return None
-        for rule in self.coordinator.data.get(DATA_FIREWALL_RULES, []):
-            if rule.get("Name") == self._rule_name:
-                return field_str(rule, "Status").lower() == "enable"
-        return None
+        rule = self._rule()
+        return rule.enabled if rule else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        if self.coordinator.data is None:
+        if (rule := self._rule()) is None:
             return {}
-        for rule in self.coordinator.data.get(DATA_FIREWALL_RULES, []):
-            if rule.get("Name") == self._rule_name:
-                return {
-                    "action":      rule.get("Action"),
-                    "policy_type": rule.get("PolicyType"),
-                    "ip_family":   rule.get("IPFamily"),
-                }
-        return {}
+        return {
+            "action": rule.action,
+            "policy_type": rule.policy_type,
+            "ip_family": rule.ip_family,
+        }
 
 
+# ── SNMP entities ─────────────────────────────────────────────────────────────
 
-class SophosVPNTunnelSensor(SophosEntity, BinarySensorEntity, RestoreEntity):
-    """Binary sensor: IPSec VPN tunnel active/inactive (SNMP).
 
-    RestoreEntity: shows the last known state immediately after an HA restart,
-    until the first coordinator fetch populates fresh data.
+class SophosVPNTunnelSensor(SophosSnmpEntity, BinarySensorEntity):
+    """IPsec connection up/down.
+
+    partially-active (some but not all SAs up) counts as on: traffic flows
+    for at least part of the connection. The degradation stays visible — and
+    alertable — via the ``partially_active`` attribute.
     """
 
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_translation_key = "vpn_tunnel_status"
-    _attr_icon = "mdi:vpn"
 
-    def __init__(
-        self, coordinator: SophosCoordinator, tunnel: dict[str, Any]
-    ) -> None:
-        self._tunnel_name = tunnel.get("name", "unknown")
-        self._tunnel_idx  = tunnel.get("index", "0")
-        super().__init__(coordinator, unique_suffix=f"vpn_{self._tunnel_idx}")
-        self._attr_translation_placeholders = {"name": self._tunnel_name}
-        self._restored_is_on: bool | None = None
+    def __init__(self, coordinator: SophosSnmpCoordinator, tunnel: VpnTunnel) -> None:
+        super().__init__(coordinator, f"vpn_{tunnel.index}", EP_TUNNELS)
+        self._index = tunnel.index
+        self._attr_translation_placeholders = {"name": tunnel.name}
 
-    async def async_added_to_hass(self) -> None:
-        """Restore the last known state on startup."""
-        await super().async_added_to_hass()
-        last_state = await self.async_get_last_state()
-        if last_state is not None and last_state.state in ("on", "off"):
-            self._restored_is_on = last_state.state == "on"
+    def _tunnel(self) -> VpnTunnel | None:
+        return (self.snmp.tunnels or {}).get(self._index)
 
     @property
     def is_on(self) -> bool | None:
-        if self.coordinator.data is None:
-            return self._restored_is_on
-        for tunnel in self.coordinator.data.get(DATA_SNMP_TUNNELS, []):
-            if tunnel.get("index") == self._tunnel_idx:
-                return tunnel.get("conn_status") == 1
-        return None
+        if (tunnel := self._tunnel()) is None or tunnel.conn_status is None:
+            return None
+        return tunnel.conn_status in (VPN_STATUS_ACTIVE, VPN_STATUS_PARTIALLY_ACTIVE)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        if self.coordinator.data is None:
+        if (tunnel := self._tunnel()) is None:
             return {}
-        for tunnel in self.coordinator.data.get(DATA_SNMP_TUNNELS, []):
-            if tunnel.get("index") == self._tunnel_idx:
-                return {
-                    "conn_status_code": tunnel.get("conn_status"),
-                    "activated":        tunnel.get("activated") == 1,
-                }
-        return {}
-
-class SophosHAEnabledSensor(SophosEntity, BinarySensorEntity):
-    """Binary sensor: High Availability cluster active or not.
-
-    True  → HA is enabled and the cluster is operational.
-    False → HA is disabled (single-node standalone mode).
-    None  → SNMP data not yet available.
-    """
-
-    _attr_translation_key  = "ha_enabled"
-    _attr_icon             = "mdi:server-network"
-    _attr_device_class     = BinarySensorDeviceClass.RUNNING
-
-    def __init__(self, coordinator: SophosCoordinator) -> None:
-        super().__init__(coordinator, unique_suffix="ha_enabled")
-
-    @property
-    def is_on(self) -> bool | None:
-        if self.coordinator.data is None:
-            return None
-        ha = self.coordinator.data.get(DATA_SNMP_HA, {})
-        if not ha:
-            return None
-        return bool(ha.get("ha_enabled", False))
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        ha = (self.coordinator.data or {}).get(DATA_SNMP_HA, {})
         return {
-            "current_state_code": ha.get("current_state"),
-            "peer_state_code":    ha.get("peer_state"),
+            "conn_status_code": tunnel.conn_status,
+            "partially_active": tunnel.conn_status == VPN_STATUS_PARTIALLY_ACTIVE,
+            "activated": tunnel.activated == VPN_ACTIVATED,
+            "tunnels_configured": tunnel.tunnels_configured,
         }
 
 
-class SophosPSUSensor(SophosEntity, BinarySensorEntity):
-    """Binary sensor for a single PSU (power supply unit).
+class SophosHAEnabledSensor(SophosSnmpEntity, BinarySensorEntity):
+    """High-availability cluster enabled."""
 
-    True  → PSU present and operational.
-    False → PSU absent or failed.
+    _attr_translation_key = "ha_enabled"
+    _attr_device_class = BinarySensorDeviceClass.RUNNING
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    Only created on physical appliances — the psus dict is empty on SFVH
-    virtual appliances, so no entities are registered for VMs.
-    """
+    def __init__(self, coordinator: SophosSnmpCoordinator) -> None:
+        super().__init__(coordinator, "ha_enabled", EP_HA)
+
+    @property
+    def is_on(self) -> bool | None:
+        return self.snmp.ha.enabled if self.snmp.ha else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        ha = self.snmp.ha
+        return {
+            "current_state_code": ha.current_state if ha else None,
+            "peer_state_code": ha.peer_state if ha else None,
+        }
+
+
+class SophosPSUSensor(SophosSnmpEntity, BinarySensorEntity):
+    """Power supply unit up/down (hardware appliances only)."""
 
     _attr_device_class = BinarySensorDeviceClass.POWER
+    _attr_translation_key = "psu_status"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coordinator: SophosCoordinator, psu_key: str) -> None:
-        super().__init__(coordinator, unique_suffix=f"psu_{psu_key}")
-        self._psu_key = psu_key
-        self._attr_translation_key = "psu_status"
+    def __init__(self, coordinator: SophosSnmpCoordinator, psu_key: str) -> None:
+        super().__init__(coordinator, f"psu_{psu_key}", EP_HEALTH)
+        self._key = psu_key
         self._attr_translation_placeholders = {"psu": psu_key.replace("_", " ")}
 
     @property
     def is_on(self) -> bool | None:
-        if self.coordinator.data is None:
-            return None
-        return (
-            self.coordinator.data
-            .get(DATA_SNMP_HEALTH, {})
-            .get("psus", {})
-            .get(self._psu_key)
-        )
+        return self.snmp.health.psus.get(self._key) if self.snmp.health else None
