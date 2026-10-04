@@ -11,7 +11,7 @@
 #
 # Python: PHCC 0.13.357 / Home Assistant 2026.8 require Python >= 3.14.
 
-pytest-homeassistant-custom-component==0.13.366  # homeassistant==2026.8.3
+pytest-homeassistant-custom-component==0.13.367  # homeassistant==2026.8.3
 
 # The integration's runtime SNMP dependency (mirrors manifest.json).
 puresnmp==2.0.1
