@@ -173,26 +173,36 @@ class SophosInterfaceSensor(SophosXmlEntity, BinarySensorEntity):
     def _iface(self) -> Interface | None:
         return (self.xml.interfaces or {}).get(self._name)
 
-    def _uses_snmp(self) -> bool:
-        return self._snmp is not None and self._snmp.endpoint_enabled(EP_LINKS)
+    def _source(self) -> tuple[str, InterfaceLink | None]:
+        """Where the state comes from: ("snmp", link) or ("switch", None).
 
-    def _link(self) -> InterfaceLink | None:
-        if self._snmp is None or self._snmp.data is None or (iface := self._iface()) is None:
-            return None
-        if not self._snmp.endpoint_available(EP_LINKS):
-            return None
-        return (self._snmp.data.links or {}).get(iface.hardware or iface.name)
+        SNMP when it is set up for links; if the agent does not answer, the
+        link is unknown (None). If SNMP answers but has no row for this
+        interface (ifName differs from the XML Hardware name), the on/off
+        switch is used instead of staying unknown for good.
+        """
+        snmp = self._snmp
+        if snmp is None or not snmp.endpoint_enabled(EP_LINKS):
+            return "switch", None
+        if snmp.data is None or not snmp.endpoint_available(EP_LINKS):
+            return "snmp", None
+        iface = self._iface()
+        links = snmp.data.links or {}
+        key = None if iface is None else (iface.hardware or iface.name)
+        if key is None or key not in links:
+            return "switch", None
+        return "snmp", links[key]
 
     @property
     def is_on(self) -> bool | None:
         iface = self._iface()
         if iface is None:
             return None
-        if not self._uses_snmp():
+        source, link = self._source()
+        if source == "switch":
             return iface.is_up
         if iface.is_up is False:
             return False  # switched off: no link, whatever SNMP says
-        link = self._link()
         if link is None or link.oper_status in (None, IF_OPER_UNKNOWN):
             return None
         return link.oper_status == IF_STATUS_UP
@@ -201,14 +211,14 @@ class SophosInterfaceSensor(SophosXmlEntity, BinarySensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         if (iface := self._iface()) is None:
             return {}
-        link = self._link()
+        source, link = self._source()
         return {
             "zone": iface.zone,
             "ipv4_assignment": iface.ipv4_assignment,
             "speed": iface.speed,
             "mtu": iface.mtu,
             "enabled": iface.is_up,
-            "link_source": "snmp" if self._uses_snmp() else "switch",
+            "link_source": source,
             "oper_status": link.oper_status if link else None,
         }
 

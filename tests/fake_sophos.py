@@ -165,6 +165,7 @@ class FakeSophosApi:
         self.broken_gets: set[str] = set()      # like broken_tags, but only for <Get>
         self.break_gets_after_set: set[str] = set()  # → broken_gets once a <Set> succeeded
         self.reject_sets: set[str] = set()      # tags whose <Set> is rejected
+        self.ignore_sets: set[str] = set()      # tags whose <Set> answers 200 but changes nothing
         self.set_operations: list[str] = []     # operation attribute of each <Set>
         self.ipsec_actions: list[tuple[str, str]] = []  # (Active|DeActive, name)
         self.set_codes: dict[str, str] = {}     # tag → status code answered to a <Set>
@@ -246,6 +247,8 @@ class FakeSophosApi:
                 return reply(f'{login}<{tag} transactionid=""><Status code="500">Operation failed</Status></{tag}>')
             set_op = request.find("Set").get("operation", "")  # type: ignore[union-attr]
             self.set_operations.append(set_op)
+            if tag in self.ignore_sets:
+                return reply(f'{login}<{tag} transactionid=""><Status code="200">Configuration applied successfully.</Status></{tag}>')
             if tag == "WirelessNetworkStatus":
                 hw = elem.findtext("Name")
                 for rec in self.records.get("WirelessNetworks", []):

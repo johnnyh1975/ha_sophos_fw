@@ -1,7 +1,8 @@
 """Diagnostics for the Sophos Firewall integration.
 
-Credentials, the SNMP community, the appliance serial number and all
-DHCP lease details (MAC, IP, hostname) are redacted. For the static leases
+Credentials, the SNMP community, the appliance serial number, all
+DHCP lease details (MAC, IP, hostname), wireless SSIDs (findable on public
+Wi-Fi maps) and access-point IP addresses are redacted. For the static leases
 only their number and field names are kept: without them a parser that
 read every mapping as one empty lease (#29) looked like any redacted list.
 """
@@ -25,6 +26,8 @@ TO_REDACT = {
     CONF_SNMP_COMMUNITY,
     CONF_HOST,
     "serial",
+    "ssid",
+    "ip_address",
 }
 
 

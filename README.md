@@ -224,7 +224,7 @@ Entity-IDs beginnen mit dem Hostnamen der Firewall, hier `5heynexg` für die Fir
 | `sensor.5heynexg_sensor_licenses_summary` | Sicherheit · Lizenzen | an | Anzahl gültiger Lizenzen; Attribute `total`, `ok`, `problem` (alle übrigen, auch nie lizenzierte Module), `next_expiry` (frühestes Datum, auch ein vergangenes), `details` |
 | `sensor.5heynexg_license_base_fw` | Sicherheit · Lizenz Base Firewall | aus, Diagnose | Abonniert/Evaluierung/Abgelaufen/…; Attribut `expiry_date` |
 | `binary_sensor.5heynexg_vpn_1` | VPN … | an | IPsec-Verbindung verbunden; Attribute `partially_active`, `activated`, `tunnels_configured` |
-| `switch.5heynexg_switch_ipsec_1` | IPsec … | an, Konfiguration | ⚗️ nur mit Schreibzugriff; Verbindung aktivieren/deaktivieren (Zustand aus SNMP, geschaltet über die XML-API) |
+| `switch.5heynexg_switch_ipsec_1` | IPsec … | an, Konfiguration | ⚗️ nur mit Schreibzugriff und SNMP; Verbindung aktivieren/deaktivieren (Zustand aus SNMP, geschaltet über die XML-API) |
 | `binary_sensor.5heynexg_ap_<name>` | Netz · Access Point … | an | ⚗️ verbunden mit der Firewall; Attribute `model`, `ip_address`, `clients` |
 | `sensor.5heynexg_ap_clients_<name>` | Netz · Access Point … Clients | an | ⚗️ Anzahl verbundener Clients |
 | `sensor.5heynexg_poe_<port>` | System · PoE … | an | ⚗️ W; Attribute `enabled`, `limit_w` |
@@ -248,17 +248,17 @@ Temperatur-, Lüfter- und Netzteil-Entitäten entstehen erst, wenn die Firewall 
 
 ## Aktionen: Seite oder Gerät sperren
 
-Zwei Paare von Aktionen ändern Gruppen auf der Firewall. Regeln legen sie nicht an; die richtest du einmal selbst ein. Danach ändert Home Assistant nur noch, wer in der Gruppe steht. Alle vier brauchen die Option „Änderungen erlauben“ und geben `changed` zurück (`true`, wenn wirklich etwas geändert wurde).
+Zwei Paare von Aktionen ändern Gruppen auf der Firewall. Regeln legen sie nicht an; die richtest du einmal selbst ein. Danach ändert Home Assistant nur noch, wer in der Gruppe steht. Alle vier brauchen die Option „Änderungen erlauben“ und geben `changed` zurück (`true`, wenn wirklich etwas geändert wurde). Nach jeder Änderung liest die Aktion die Gruppe noch einmal von der Firewall und meldet einen Fehler, wenn die Änderung dort nicht angekommen ist.
 
 **Seite sperren** (`sophos_firewall.block_url` / `unblock_url`)
 1. Auf der Firewall unter *Web → URL groups* eine eigene URL-Gruppe anlegen, z. B. „HA Blocked Sites“. Vordefinierte Gruppen lassen sich nicht ändern.
 2. Die Gruppe in der Web-Filter-Richtlinie der betroffenen Geräte auf „Block“ setzen.
-3. Die Aktion fügt eine Domain hinzu oder entfernt sie. Subdomains sind laut Sophos eingeschlossen; Pfade, Platzhalter (`*.`) und reguläre Ausdrücke nimmt SFOS nicht an. Ein `https://` oder ein Pfad wird von der Aktion entfernt.
+3. Die Aktion fügt eine Domain hinzu oder entfernt sie. Subdomains sind laut Sophos eingeschlossen; Pfade, Platzhalter (`*.`) und reguläre Ausdrücke nimmt SFOS nicht an. Ein `https://`, ein Pfad, `?…` oder `#…` wird von der Aktion entfernt. Domains mit Unterstrich oder Umlauten nimmt die Aktion nicht an.
 
 **Gerät sperren** (`sophos_firewall.block_device` / `unblock_device`)
 1. Auf der Firewall unter *Hosts and services → IP host group* eine IPv4-Gruppe anlegen, z. B. „HA Blocked Devices“.
 2. Eine Firewall-Regel mit dieser Gruppe als Quelle und der Aktion „Drop“ oder „Reject“ anlegen, oben in der Regelliste.
-3. `block_device` nimmt das Gerät per IPv4-Adresse in die Gruppe auf. Gibt es schon einen IP-Host mit dieser Adresse, wird er verwendet; sonst legt die Aktion einen an (Name „HA <Adresse>“ oder `host_name`). `unblock_device` nimmt das Gerät wieder heraus; der IP-Host bleibt bestehen.
+3. `block_device` nimmt das Gerät per IPv4-Adresse in die Gruppe auf. Gibt es schon einen IP-Host mit dieser Adresse, wird er verwendet; sonst legt die Aktion einen an (Name „HA <Adresse>“ oder `host_name`). Die Antwort nennt den verwendeten Host (`host`). Ist `host_name` schon an einen Host mit anderer Adresse vergeben, bricht die Aktion mit einer Meldung ab. `unblock_device` nimmt jeden IP-Host mit dieser Adresse aus der Gruppe (Antwort `hosts`); die IP-Hosts selbst bleiben bestehen.
 
 ```yaml
 # Kinder-Tablet um 21 Uhr sperren
@@ -408,7 +408,7 @@ Weiterführend: [Top-25 geblockte Verbindungen als Dashboard](docs/top25_blocked
 - **Keine Auslastung in Prozent der Leitung:** Die Integration zeigt Traffic nur in Mbit/s. Die Port-Geschwindigkeit steht als Attribut `speed` am Interface; die SFVH meldet dort 0.
 - **„Letzter Start“ nach 497 Tagen:** Der Uptime-Zähler der Firewall ist ein 32-Bit-Wert und läuft nach etwa 497 Tagen über. Danach springt „Letzter Start“ vor, als hätte die Firewall neu gestartet.
 - **Webcat-Version:** SFOS 22 meldet sie teils nicht („not available“). Dann wird die Entität nicht angelegt bzw. nach drei Abfragen ohne Wert entfernt.
-- **Interface-Link ohne SNMP:** Die XML-API liefert nur, ob ein Port eingeschaltet ist; den echten Link-Zustand gibt es nur per SNMP. Ohne SNMP zeigt ein eingeschalteter Port ohne Kabel deshalb „Verbunden“ (Attribut `link_source: switch`). Mit SNMP, aber nicht antwortendem Agenten steht der Sensor auf „Unbekannt“, statt den Ein/Aus-Zustand als Link auszugeben.
+- **Interface-Link ohne SNMP:** Die XML-API liefert nur, ob ein Port eingeschaltet ist; den echten Link-Zustand gibt es nur per SNMP. Ohne SNMP zeigt ein eingeschalteter Port ohne Kabel deshalb „Verbunden“ (Attribut `link_source: switch`). Mit SNMP, aber nicht antwortendem Agenten steht der Sensor auf „Unbekannt“, statt den Ein/Aus-Zustand als Link auszugeben. Findet SNMP zu einem Interface keinen passenden Eintrag (anderer Name), zeigt der Sensor den Ein/Aus-Zustand (`link_source: switch`).
 - **Ungetestete Teile (⚗️):** WLAN-Netze, Access Points, PoE und das Schalten von IPsec-Verbindungen sind nach Sophos-Doku, MIB und Sophos-SDK gebaut, aber an keiner echten Firewall geprüft. Insbesondere unbelegt: ob der Verbindungsname in der SNMP-Tunneltabelle exakt dem Namen in der XML-API entspricht (sonst schlägt das Schalten mit einer Fehlermeldung fehl), und was eine Firewall ohne WLAN auf die Abfrage der WLAN-Netze antwortet.
 - **Aktionen nur für IPv4-Geräte:** `block_device` nimmt IPv4-Adressen und IPv4-Gruppen. Die maximale Anzahl Domains pro URL-Gruppe ist widersprüchlich dokumentiert (128 bzw. 10.000); eine volle Gruppe meldet die Aktion als Fehler.
 - **Kein Backup auf Knopfdruck:** Die XML-API dokumentiert keinen Weg, ein Backup sofort auszulösen. Der Button früherer Versionen schrieb dafür den Backup-Zeitplan unvollständig zurück und ist seit 1.2.0 entfernt.

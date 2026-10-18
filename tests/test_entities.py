@@ -976,6 +976,20 @@ async def test_switched_off_interface_is_off_even_with_link(
     assert _state(hass, f"binary_sensor.{P}_iface_portb") == STATE_OFF
 
 
+async def test_interface_without_snmp_row_falls_back_to_the_switch(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """Review: an interface whose ifName does not match the XML Hardware
+    name stayed "unknown" for good although SNMP answered."""
+    from .fake_snmp import IFX_ENTRY, OctetString
+
+    snmp_agent.set(f"{IFX_ENTRY}.1.6", OctetString(b"eth0"))  # PortA under another name
+    await setup_entry(hass, make_entry())
+    entity_id = f"binary_sensor.{P}_iface_porta"
+    assert _state(hass, entity_id) == STATE_ON
+    assert _attrs(hass, entity_id)["link_source"] == "switch"
+
+
 async def test_without_snmp_the_switch_is_all_there_is(
     hass: HomeAssistant, xml_api: FakeSophosApi
 ) -> None:
@@ -1072,3 +1086,71 @@ async def test_ipsec_switch(
     await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}, blocking=True)
     await hass.async_block_till_done()
     assert xml_api.ipsec_actions == [("DeActive", "Azure-VPN")]
+
+
+async def test_ipsec_switch_follows_a_renumbered_row(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """Review: the switch wrote the name it saw at creation, though its
+    state follows the SNMP row index."""
+    from .fake_snmp import VPN_ENTRY, OctetString
+
+    entry = make_entry(write_access=True)
+    await setup_entry(hass, entry)
+    snmp_agent.set(f"{VPN_ENTRY}.2.1", OctetString(b"Branch-VPN"))
+    snmp = entry.runtime_data.snmp
+    snmp.invalidate("tunnels")
+    await snmp.async_refresh()
+    await hass.async_block_till_done()
+    entity_id = f"switch.{P}_switch_ipsec_1"
+    await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    assert xml_api.ipsec_actions == [("DeActive", "Branch-VPN")]
+
+
+async def test_switching_snmp_off_removes_the_ipsec_switches(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """Review: with write access on and SNMP switched off, the IPsec
+    switches stayed as unavailable entities."""
+    entry = make_entry(write_access=True)
+    await setup_entry(hass, entry)
+    registry = er.async_get(hass)
+    assert registry.async_get(f"switch.{P}_switch_ipsec_1") is not None
+    hass.config_entries.async_update_entry(entry, options={**entry.options, "snmp_enabled": False})
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert registry.async_get(f"switch.{P}_switch_ipsec_1") is None
+    assert registry.async_get(f"switch.{P}_switch_fwrule_allow_lan_to_iot") is not None
+
+
+async def test_ipsec_switch_without_its_row_refuses_to_write(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """No row behind the index: no connection name to send, so no request."""
+    from custom_components.sophos_firewall.models import VpnTunnel
+    from custom_components.sophos_firewall.sophos_client import SophosAPIError
+    from custom_components.sophos_firewall.switch import SophosIpsecSwitch
+
+    entry = make_entry(write_access=True)
+    await setup_entry(hass, entry)
+    runtime = entry.runtime_data
+    switch = SophosIpsecSwitch(runtime.snmp, VpnTunnel(index="9", name="Gone"), runtime.xml.client)
+    assert switch._object_name == "#9"
+    with pytest.raises(SophosAPIError):
+        await switch._write(False)
+    assert xml_api.ipsec_actions == []
+
+
+async def test_wireless_switch_write_error_names_the_network(
+    hass: HomeAssistant, xml_api: FakeSophosApi
+) -> None:
+    xml_api.records["WirelessNetworks"] = [dict(_WLAN)]
+    await setup_entry(
+        hass, make_entry(snmp_enabled=False, write_access=True, poll_xml_wireless=True)
+    )
+    xml_api.reject_sets.add("WirelessNetworkStatus")
+    with pytest.raises(HomeAssistantError) as err:
+        await hass.services.async_call(
+            SWITCH_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: f"switch.{P}_switch_wlan_wlnet1"},
+            blocking=True,
+        )
+    assert err.value.translation_placeholders["name"] == "Guest WiFi"

@@ -1,7 +1,9 @@
 """Actions: block/unblock a site (URL group) or a device (IP host group)."""
 from __future__ import annotations
 
+import asyncio
 import copy
+import logging
 from typing import Any
 
 import pytest
@@ -93,7 +95,10 @@ async def test_unknown_url_group(hass: HomeAssistant) -> None:
 
 
 @pytest.mark.usefixtures("writable")
-@pytest.mark.parametrize("url", ["*.example.com", "example", "exa mple.com", "a" * 251 + ".com"])
+@pytest.mark.parametrize(
+    "url",
+    ["*.example.com", "example", "exa mple.com", "a" * 251 + ".com", "-a.com", "a-.com", "a_b.com"],
+)
 async def test_invalid_domain_is_rejected(hass: HomeAssistant, url: str) -> None:
     import voluptuous as vol
 
@@ -145,12 +150,12 @@ async def test_unblock_device_keeps_the_host(hass: HomeAssistant, xml_api: FakeS
     response = await _call(
         hass, "unblock_device", host_group="HA Blocked Devices", ip_address="10.10.0.50"
     )
-    assert response == {"changed": True, "host": "nas"}
+    assert response == {"changed": True, "hosts": ["nas"]}
     group = _group(xml_api, "IPHostGroup", "HA Blocked Devices")
     assert group == {k: v for k, v in before.items() if k != "HostList"}  # empty: no HostList
     assert any(h["Name"] == "nas" for h in xml_api.records["IPHost"])
     assert (await _call(hass, "unblock_device", host_group="HA Blocked Devices",
-                        ip_address="10.99.0.1")) == {"changed": False}
+                        ip_address="10.99.0.1")) == {"changed": False, "hosts": []}
 
 
 @pytest.mark.usefixtures("writable")
@@ -208,6 +213,8 @@ async def test_full_group_is_reported(hass: HomeAssistant, xml_api: FakeSophosAp
         {"ip_address": "fe80::1"},
         {"ip_address": "10.0.0.1", "host_name": "#bad"},
         {"ip_address": "10.0.0.1", "host_name": "a,b"},
+        {"ip_address": "10.0.0.1", "host_name": "a\nb"},
+        {"ip_address": "10.0.0.1", "host_name": "a\x00b"},
     ],
 )
 async def test_invalid_device_input(hass: HomeAssistant, data: dict[str, str]) -> None:
@@ -215,3 +222,111 @@ async def test_invalid_device_input(hass: HomeAssistant, data: dict[str, str]) -
 
     with pytest.raises(vol.Invalid):
         await _call(hass, "block_device", host_group="Empty Devices", **data)
+
+
+@pytest.mark.usefixtures("writable")
+@pytest.mark.parametrize(
+    "url", ["https://www.example.com/a?b=1", "example.com?x", "example.com#top", "example.com."]
+)
+async def test_url_is_reduced_to_the_domain(
+    hass: HomeAssistant, xml_api: FakeSophosApi, url: str
+) -> None:
+    await _call(hass, "block_url", url_group="Empty Group", url=url)
+    assert _group(xml_api, "WebFilterURLGroup", "Empty Group")["URLlist"]["URL"].endswith(
+        "example.com"
+    )
+
+
+# ── Review findings 1.2.0 ─────────────────────────────────────────────────────
+
+
+@pytest.mark.usefixtures("writable")
+async def test_parallel_block_device_creates_one_host(
+    hass: HomeAssistant, xml_api: FakeSophosApi
+) -> None:
+    """Review: find and add ran outside the request slot, so two calls for
+    the same address both added the host and the second failed with 502."""
+    xml_api.delay = 0.01
+    results = await asyncio.gather(
+        _call(hass, "block_device", host_group="Empty Devices", ip_address="10.10.0.88"),
+        _call(hass, "block_device", host_group="Empty Devices", ip_address="10.10.0.88"),
+    )
+    assert sorted(r["changed"] for r in results) == [False, True]
+    assert {r["host"] for r in results} == {"HA 10.10.0.88"}
+    assert xml_api.count("set", "IPHost") == 1
+
+
+@pytest.mark.usefixtures("writable")
+async def test_unknown_group_leaves_no_new_host(
+    hass: HomeAssistant, xml_api: FakeSophosApi
+) -> None:
+    """Review: the host was created before the group was checked."""
+    hosts = copy.deepcopy(xml_api.records["IPHost"])
+    with pytest.raises(HomeAssistantError) as err:
+        await _call(hass, "block_device", host_group="Nope", ip_address="10.10.0.99")
+    assert err.value.translation_key == "group_not_found"
+    assert xml_api.records["IPHost"] == hosts
+
+
+@pytest.mark.usefixtures("writable")
+async def test_host_name_taken_names_the_host(
+    hass: HomeAssistant, xml_api: FakeSophosApi
+) -> None:
+    """"nas" is used by 10.10.0.50: SFOS answers 502 (same name exists)."""
+    with pytest.raises(HomeAssistantError) as err:
+        await _call(
+            hass, "block_device", host_group="Empty Devices", ip_address="10.10.0.99",
+            host_name="nas",
+        )
+    assert err.value.translation_key == "host_name_taken"
+    assert err.value.translation_placeholders["name"] == "nas"
+    assert ("set", "IPHostGroup") not in xml_api.requests
+
+
+@pytest.mark.usefixtures("writable")
+async def test_unblock_removes_every_host_with_the_address(
+    hass: HomeAssistant, xml_api: FakeSophosApi
+) -> None:
+    """Review: only the first host with that address was looked at."""
+    xml_api.records["IPHost"].insert(
+        0, {"Name": "nas-old", "IPFamily": "IPv4", "HostType": "IP", "IPAddress": "10.10.0.50"}
+    )
+    _group(xml_api, "IPHostGroup", "HA Blocked Devices")["HostList"] = {"Host": ["nas", "nas-old"]}
+    response = await _call(
+        hass, "unblock_device", host_group="HA Blocked Devices", ip_address="10.10.0.50"
+    )
+    assert response == {"changed": True, "hosts": ["nas", "nas-old"]}
+    assert "HostList" not in _group(xml_api, "IPHostGroup", "HA Blocked Devices")
+
+
+@pytest.mark.usefixtures("writable")
+@pytest.mark.parametrize(
+    ("service", "tag", "data"),
+    [
+        ("unblock_device", "IPHostGroup", {"host_group": "HA Blocked Devices", "ip_address": "10.10.0.50"}),
+        ("block_device", "IPHostGroup", {"host_group": "Empty Devices", "ip_address": "10.10.0.50"}),
+        ("unblock_url", "WebFilterURLGroup", {"url_group": "HA Blocked Sites", "url": "games.example"}),
+        ("block_url", "WebFilterURLGroup", {"url_group": "HA Blocked Sites", "url": "new.example"}),
+    ],
+)
+async def test_change_not_applied_is_an_error(
+    hass: HomeAssistant, xml_api: FakeSophosApi, service: str, tag: str, data: dict[str, str]
+) -> None:
+    """Review: if SFOS answered 200 but kept the old list (e.g. an update
+    without HostList merged instead of replaced), the action said
+    changed: true. The group is now read back."""
+    xml_api.ignore_sets.add(tag)
+    with pytest.raises(HomeAssistantError) as err:
+        await _call(hass, service, **data)
+    assert err.value.translation_key == "write_not_applied"
+
+
+@pytest.mark.usefixtures("writable")
+async def test_failed_read_back_keeps_the_confirmed_write(
+    hass: HomeAssistant, xml_api: FakeSophosApi, caplog: pytest.LogCaptureFixture
+) -> None:
+    xml_api.break_gets_after_set.add("WebFilterURLGroup")
+    with caplog.at_level(logging.WARNING):
+        response = await _call(hass, "block_url", url_group="HA Blocked Sites", url="n.example")
+    assert response == {"changed": True}
+    assert "Could not read WebFilterURLGroup" in caplog.text

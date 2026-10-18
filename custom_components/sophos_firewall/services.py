@@ -20,6 +20,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.util.json import JsonValueType
 
 from .const import CONF_WRITE_ACCESS, DOMAIN
 from .sophos_client import SophosClient, SophosError, SophosNotFoundError, SophosWriteError
@@ -39,17 +40,20 @@ SERVICE_UNBLOCK_DEVICE = "unblock_device"
 # SFOS accepts domain names only in URL groups: "You must enter a valid domain
 # name. Regular expressions aren't allowed." (SFOS 22 help); Sophos' migration
 # utility keeps "simple domain tokens (A-Za-z0-9.-)"; max 250 characters.
-_DOMAIN_RE = re.compile(r"^(?=.{1,250}$)[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
+# Labels must not start or end with a hyphen (RFC 1123). Names with other
+# characters (underscore, umlauts) are refused rather than guessed at.
+_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+_DOMAIN_RE = re.compile(rf"^(?=.{{1,250}}$){_LABEL}(\.{_LABEL})+$")
 # IP host names: max 50 characters, no comma, not starting with "#" (API docs
 # allow 60; Sophos' migration utility truncates to 50).
-_HOST_NAME_RE = re.compile(r"^[^#,][^,]{0,49}$")
+_HOST_NAME_RE = re.compile(r"^[^#,\x00-\x1f][^,\x00-\x1f]{0,49}$")
 
 
 def _domain(value: Any) -> str:
     text = str(value).strip().lower()
     if text.startswith(("http://", "https://")):
         text = text.split("://", 1)[1]
-    text = text.split("/", 1)[0]
+    text = re.split(r"[/?#]", text, maxsplit=1)[0].rstrip(".")
     if not _DOMAIN_RE.match(text):
         raise vol.Invalid("expected a domain name such as example.com")
     return text
@@ -109,15 +113,18 @@ def _client(hass: HomeAssistant, call: ServiceCall) -> SophosClient:
     return client
 
 
-def _raise(err: SophosError, name: str) -> NoReturn:
+def _raise(err: SophosError, name: str, host_name: str | None = None) -> NoReturn:
     """Translate a failed write; the firewall's code picks the message."""
     code = err.code if isinstance(err, SophosWriteError) else None
     key = {
         "528": "group_not_editable",
         "522": "group_full", "523": "group_full", "524": "group_full", "525": "group_full",
+        "not_applied": "write_not_applied",
     }.get(code or "", "write_failed")
     if isinstance(err, SophosNotFoundError):
         key = "group_not_found"
+    if code == "502" and host_name is not None:
+        key, name = "host_name_taken", host_name
     raise HomeAssistantError(
         translation_domain=DOMAIN, translation_key=key,
         translation_placeholders={"name": name, "error": str(err)},
@@ -138,11 +145,11 @@ async def _block_device(hass: HomeAssistant, call: ServiceCall) -> ServiceRespon
     client = _client(hass, call)
     group = call.data[ATTR_HOST_GROUP]
     ip = call.data[ATTR_IP_ADDRESS]
+    name = call.data.get(ATTR_HOST_NAME) or f"HA {ip}"
     try:
-        host = await client.ensure_ip_host(ip, call.data.get(ATTR_HOST_NAME) or f"HA {ip}")
-        changed = await client.set_host_in_group(group, host, True)
+        changed, host = await client.block_ip_in_group(group, ip, name)
     except SophosError as err:
-        _raise(err, group)
+        _raise(err, group, host_name=name)
     return {"changed": changed, "host": host}
 
 
@@ -150,12 +157,11 @@ async def _unblock_device(hass: HomeAssistant, call: ServiceCall) -> ServiceResp
     client = _client(hass, call)
     group = call.data[ATTR_HOST_GROUP]
     try:
-        if (host := await client.find_ip_host(call.data[ATTR_IP_ADDRESS])) is None:
-            return {"changed": False}
-        changed = await client.set_host_in_group(group, host, False)
+        changed, hosts = await client.unblock_ip_in_group(group, call.data[ATTR_IP_ADDRESS])
     except SophosError as err:
         _raise(err, group)
-    return {"changed": changed, "host": host}
+    removed: list[JsonValueType] = list(hosts)
+    return {"changed": changed, "hosts": removed}
 
 
 def async_setup_services(hass: HomeAssistant) -> None:

@@ -474,6 +474,12 @@
     },
     "group_full": {
       "message": "{name} ist voll: {error}"
+    },
+    "host_name_taken": {
+      "message": "Es gibt schon einen IP-Host namens {name} mit einer anderen Adresse. Wähle einen anderen host_name."
+    },
+    "write_not_applied": {
+      "message": "{name}: Die Firewall hat die Änderung bestätigt, aber beim Nachlesen ist sie nicht da. Bitte prüfe die Gruppe in der Weboberfläche."
     }
   },
   "issues": {

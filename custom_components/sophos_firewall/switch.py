@@ -33,7 +33,7 @@ from .entity import (
     async_setup_dynamic_entities,
 )
 from .models import FirewallRule, SnmpData, VpnTunnel, WebFilterPolicy, WirelessNetwork, XmlData
-from .sophos_client import SophosClient, SophosError
+from .sophos_client import SophosAPIError, SophosClient, SophosError
 
 # Writes go to the firewall one at a time.
 PARALLEL_UPDATES = 1
@@ -68,6 +68,8 @@ async def async_setup_entry(
         ],
     )
     if (snmp := runtime.snmp) is None:
+        # SNMP switched off: the IPsec switches have no state source left.
+        async_remove_stale_entities(hass, entry, "switch", "switch_ipsec_", (), remove_all=True)
         return
     client = runtime.xml.client
     # IPsec connections: state from the SNMP tunnel table, written through
@@ -260,7 +262,6 @@ class SophosIpsecSwitch(_SophosWriteSwitch[SophosSnmpCoordinator]):
     ) -> None:
         super().__init__(coordinator, f"switch_ipsec_{tunnel.index}", EP_TUNNELS)
         self._index = tunnel.index
-        self._conn_name = tunnel.name
         self._client = client
         self._attr_translation_placeholders = {"name": tunnel.name}
 
@@ -269,7 +270,10 @@ class SophosIpsecSwitch(_SophosWriteSwitch[SophosSnmpCoordinator]):
 
     @property
     def _object_name(self) -> str:
-        return self._conn_name
+        # The name in the current row, not the one seen at creation: the
+        # entity follows the SNMP row index, and rows may be renumbered.
+        tunnel = self._tunnel()
+        return tunnel.name if tunnel is not None and tunnel.name else f"#{self._index}"
 
     def _actual(self) -> bool | None:
         tunnel = self._tunnel()
@@ -278,4 +282,7 @@ class SophosIpsecSwitch(_SophosWriteSwitch[SophosSnmpCoordinator]):
         return tunnel.activated == VPN_ACTIVATED
 
     async def _write(self, on: bool) -> None:
-        await self._client.set_ipsec_connection_active(self._conn_name, on)
+        tunnel = self._tunnel()
+        if tunnel is None or not tunnel.name:
+            raise SophosAPIError(f"IPsec connection #{self._index} is no longer reported")
+        await self._client.set_ipsec_connection_active(tunnel.name, on)

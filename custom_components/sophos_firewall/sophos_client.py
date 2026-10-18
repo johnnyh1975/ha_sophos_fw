@@ -525,7 +525,11 @@ class SophosClient:
             raise SophosWriteError(f"{what} failed (code {code or '?'}): {detail}", code=code)
 
     async def _modify_record(
-        self, tag: str, name: str, change: Callable[[ET.Element], bool]
+        self,
+        tag: str,
+        name: str,
+        change: Callable[[ET.Element], bool],
+        verify: Callable[[ET.Element], bool] | None = None,
     ) -> None:
         """Read one record unparsed, let ``change`` edit it, write it all back.
 
@@ -533,15 +537,45 @@ class SophosClient:
         is already in the group); then no Set is sent.
         """
         async with self._semaphore:
-            elem = await self._get_record_element(tag, name)
-            if not change(elem):
-                return
-            body = ET.tostring(elem, encoding="unicode")
-            root = await self._post(
-                self._request(f'<Set operation="update">{body}</Set>'),
-                label=f"Set {tag}", slot_held=True,
-            )
+            await self._modify_record_held(tag, name, change, verify)
+
+    async def _modify_record_held(
+        self,
+        tag: str,
+        name: str,
+        change: Callable[[ET.Element], bool],
+        verify: Callable[[ET.Element], bool] | None = None,
+    ) -> None:
+        """``_modify_record`` for a caller that already holds the request slot.
+
+        ``verify`` (group memberships) reads the record again after the
+        write and checks that the change is really there: an answer of 200
+        alone does not prove that SFOS applied an update the way it was
+        sent (e.g. when the last member is removed). If the change is not
+        visible the write counts as failed.
+        """
+        elem = await self._get_record_element(tag, name)
+        if not change(elem):
+            return
+        body = ET.tostring(elem, encoding="unicode")
+        root = await self._post(
+            self._request(f'<Set operation="update">{body}</Set>'),
+            label=f"Set {tag}", slot_held=True,
+        )
         self._confirm(root, f"Set {tag} {name!r}", f"{tag}/Status")
+        if verify is None:
+            return
+        try:
+            after = await self._get_record_element(tag, name)
+        except SophosError as err:
+            _LOGGER.warning("Could not read %s %r back after the change: %s", tag, name, err)
+            return
+        if not verify(after):
+            raise SophosWriteError(
+                f"{tag} {name!r}: the firewall confirmed the change, "
+                "but reading it back shows it was not applied",
+                code="not_applied",
+            )
 
     async def _update_field(self, tag: str, name: str, field: str, value: str) -> None:
         """Change one field of a record and write the whole record back.
@@ -595,6 +629,15 @@ class SophosClient:
         wanted = url.strip().lower()
         changed = True
 
+        def urls(elem: ET.Element) -> list[ET.Element]:
+            url_list = _child_ci(elem, "URLlist")
+            if url_list is None:
+                return []
+            return [
+                e for e in url_list
+                if e.tag.lower() == "url" and (e.text or "").strip().lower() == wanted
+            ]
+
         def change(elem: ET.Element) -> bool:
             nonlocal changed
             if (_child_text(elem, "IsDefault") or "No").lower() != "no":
@@ -602,8 +645,7 @@ class SophosClient:
                     f"URL group {group!r} is a built-in group and cannot be edited", code="528"
                 )
             url_list = _child_ci(elem, "URLlist")
-            entries = [] if url_list is None else [e for e in url_list if e.tag.lower() == "url"]
-            existing = [e for e in entries if (e.text or "").strip().lower() == wanted]
+            existing = urls(elem)
             if present:
                 changed = not existing
                 if changed:
@@ -619,18 +661,115 @@ class SophosClient:
                     elem.remove(url_list)
             return changed
 
-        await self._modify_record(XML_TAG_URL_GROUP, group, change)
+        await self._modify_record(
+            XML_TAG_URL_GROUP, group, change, verify=lambda e: bool(urls(e)) == present
+        )
         return changed
 
     # ── IP host groups: block / unblock a device ──────────────────────────────
 
-    async def ensure_ip_host(self, ip: str, name: str) -> str:
-        """Return the name of an IPHost (HostType IP) for ``ip``; create it if needed.
+    async def _ip_hosts_held(self, ip: str) -> list[str]:
+        """Names of all IPHosts (HostType IP) with this address (slot held)."""
+        root = await self._post(
+            self._request(f"<Get><{XML_TAG_IP_HOST}/></Get>"),
+            label=f"Get {XML_TAG_IP_HOST}", slot_held=True,
+        )
+        return [
+            name
+            for elem in root.iter(XML_TAG_IP_HOST)
+            if not _is_status_only(elem)
+            and (_child_text(elem, "HostType") or "") == "IP"
+            and (_child_text(elem, "IPAddress") or "") == ip
+            and (name := _child_text(elem, "Name"))
+        ]
 
-        An existing host with that address is reused whatever its name.
+    @staticmethod
+    def _host_members(elem: ET.Element) -> list[str]:
+        host_list = elem.find("HostList")
+        if host_list is None:
+            return []
+        return [(e.text or "").strip() for e in host_list.findall("Host")]
+
+    @staticmethod
+    def _check_ipv4_group(elem: ET.Element, group: str) -> None:
+        if (_child_text(elem, "IPFamily") or "IPv4") != "IPv4":
+            raise SophosWriteError(f"IP host group {group!r} is not an IPv4 group")
+
+    async def block_ip_in_group(self, group: str, ip: str, name: str) -> tuple[bool, str]:
+        """Put the device with ``ip`` into an IP host group; return (changed, host).
+
+        An IPHost with that address is reused whatever its name; otherwise
+        one named ``name`` is created. Everything runs in one request slot:
+        the group is checked first (so a wrong group name leaves no new
+        host behind), and two calls for the same address cannot both
+        create the host.
+
+        The documented and tested way to change a group (Sophos SDK, Ansible
+        integration tests) is to update it with its complete HostList.
         """
-        if existing := await self.find_ip_host(ip):
-            return existing
+        async with self._semaphore:
+            group_elem = await self._get_record_element(XML_TAG_IP_HOST_GROUP, group)
+            self._check_ipv4_group(group_elem, group)
+            hosts = await self._ip_hosts_held(ip)
+            members = self._host_members(group_elem)
+            if member := next((h for h in hosts if h in members), None):
+                return False, member
+            host = hosts[0] if hosts else await self._add_ip_host_held(ip, name)
+
+            def change(elem: ET.Element) -> bool:
+                self._check_ipv4_group(elem, group)
+                if host in self._host_members(elem):
+                    return False
+                host_list = elem.find("HostList")
+                if host_list is None:
+                    host_list = ET.Element("HostList")
+                    # keep the documented element order: HostList before IPFamily
+                    family = elem.find("IPFamily")
+                    index = list(elem).index(family) if family is not None else len(elem)
+                    elem.insert(index, host_list)
+                ET.SubElement(host_list, "Host").text = host
+                return True
+
+            await self._modify_record_held(
+                XML_TAG_IP_HOST_GROUP, group, change,
+                verify=lambda e: host in self._host_members(e),
+            )
+        return True, host
+
+    async def unblock_ip_in_group(self, group: str, ip: str) -> tuple[bool, list[str]]:
+        """Take every IPHost with ``ip`` out of an IP host group.
+
+        Returns (changed, removed host names). The hosts themselves stay:
+        they may be used elsewhere. An empty group has no HostList element
+        (XSOAR recording of a real firewall).
+        """
+        removed: list[str] = []
+        async with self._semaphore:
+            hosts = set(await self._ip_hosts_held(ip))
+
+            def change(elem: ET.Element) -> bool:
+                self._check_ipv4_group(elem, group)
+                host_list = elem.find("HostList")
+                if host_list is None:
+                    return False
+                for entry in host_list.findall("Host"):
+                    if (entry.text or "").strip() in hosts:
+                        removed.append((entry.text or "").strip())
+                        host_list.remove(entry)
+                if not removed:
+                    return False
+                if not len(host_list):
+                    elem.remove(host_list)
+                return True
+
+            await self._modify_record_held(
+                XML_TAG_IP_HOST_GROUP, group, change,
+                verify=lambda e: not hosts.intersection(self._host_members(e)),
+            )
+        return bool(removed), removed
+
+    async def _add_ip_host_held(self, ip: str, name: str) -> str:
+        """Create an IPHost (HostType IP) for ``ip`` named ``name`` (slot held)."""
         root = await self._post(
             self._request(
                 '<Set operation="add"><IPHost>'
@@ -639,57 +778,18 @@ class SophosClient:
                 "<Description>Created by Home Assistant</Description>"
                 "</IPHost></Set>"
             ),
-            label="Set IPHost",
+            label="Set IPHost", slot_held=True,
         )
-        self._confirm(root, f"Add IP host {name!r}", "IPHost/Status")
+        try:
+            self._confirm(root, f"Add IP host {name!r}", "IPHost/Status")
+        except SophosWriteError as err:
+            if err.code == "502":  # "same name exists" — used for another address
+                raise SophosWriteError(
+                    f"An IP host named {name!r} already exists with another address",
+                    code="502",
+                ) from err
+            raise
         return name
-
-    async def find_ip_host(self, ip: str) -> str | None:
-        """Return the name of the IPHost (HostType IP) with this address, if any."""
-        for elem in await self._get_record_elements(XML_TAG_IP_HOST):
-            if (_child_text(elem, "HostType") or "") == "IP" and (
-                _child_text(elem, "IPAddress") or ""
-            ) == ip:
-                return _child_text(elem, "Name")
-        return None
-
-    async def set_host_in_group(self, group: str, host: str, present: bool) -> bool:
-        """Add an IP host to an IP host group, or remove it.
-
-        The documented and tested way (Sophos SDK, Ansible integration tests)
-        is to update the group with its complete HostList; an empty group has
-        no HostList element. Returns False if nothing had to change.
-        """
-        changed = True
-
-        def change(elem: ET.Element) -> bool:
-            nonlocal changed
-            if (_child_text(elem, "IPFamily") or "IPv4") != "IPv4":
-                raise SophosWriteError(f"IP host group {group!r} is not an IPv4 group")
-            host_list = elem.find("HostList")
-            entries = [] if host_list is None else host_list.findall("Host")
-            existing = [e for e in entries if (e.text or "").strip() == host]
-            if present:
-                changed = not existing
-                if changed:
-                    if host_list is None:
-                        host_list = ET.Element("HostList")
-                        # keep the documented element order: HostList before IPFamily
-                        family = elem.find("IPFamily")
-                        index = list(elem).index(family) if family is not None else len(elem)
-                        elem.insert(index, host_list)
-                    ET.SubElement(host_list, "Host").text = host
-                return changed
-            changed = bool(existing) and host_list is not None
-            if changed and host_list is not None:
-                for entry in existing:
-                    host_list.remove(entry)
-                if not len(host_list):  # an empty group has no HostList (XSOAR recording)
-                    elem.remove(host_list)
-            return changed
-
-        await self._modify_record(XML_TAG_IP_HOST_GROUP, group, change)
-        return changed
 
     # ── Wireless networks (untested: no appliance with wireless available) ────
 
