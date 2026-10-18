@@ -96,6 +96,7 @@ from .const import (
     EP_LICENSES,
     EP_SERVICES,
     EP_STATS,
+    EP_LINKS,
     EP_TRAFFIC,
     EP_TUNNELS,
     EP_WEB_FILTER,
@@ -524,6 +525,9 @@ _SNMP_ENDPOINTS: tuple[Endpoint[SNMPClient], ...] = (
              CONF_POLL_SNMP_STATS, DEFAULT_POLL_SNMP_STATS),
     Endpoint(EP_TRAFFIC, Tier.REALTIME, lambda c: c.get_traffic(),
              CONF_POLL_SNMP_TRAFFIC, DEFAULT_POLL_SNMP_TRAFFIC),
+    # Link state of the interface entities (XML) — same option as those.
+    Endpoint(EP_LINKS, Tier.REALTIME, lambda c: c.get_links(),
+             CONF_POLL_XML_INTERFACES, DEFAULT_POLL_XML_INTERFACES),
 )
 
 

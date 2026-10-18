@@ -19,7 +19,10 @@ from .const import (
     EP_HA,
     EP_HEALTH,
     EP_INTERFACES,
+    EP_LINKS,
     EP_TUNNELS,
+    IF_OPER_UNKNOWN,
+    IF_STATUS_UP,
     VPN_ACTIVATED,
     VPN_STATUS_ACTIVE,
     VPN_STATUS_PARTIALLY_ACTIVE,
@@ -34,7 +37,7 @@ from .entity import (
     async_remove_stale_entities,
     async_setup_dynamic_entities,
 )
-from .models import FirewallRule, Interface, SnmpData, VpnTunnel
+from .models import FirewallRule, Interface, InterfaceLink, SnmpData, VpnTunnel
 
 PARALLEL_UPDATES = 0
 
@@ -51,7 +54,8 @@ async def async_setup_entry(
     xml_families: list[DynamicFamily[SophosXmlCoordinator, Any]] = [
         DynamicFamily(
             "iface_", EP_INTERFACES,
-            lambda d: _keyed("iface_", d.interfaces), SophosInterfaceSensor,
+            lambda d: _keyed("iface_", d.interfaces),
+            lambda coordinator, iface: SophosInterfaceSensor(coordinator, iface, runtime.snmp),
         ),
     ]
     if write_access:
@@ -114,33 +118,74 @@ def _psu_items(data: SnmpData) -> dict[str, str] | None:
 
 
 class SophosInterfaceSensor(SophosXmlEntity, BinarySensorEntity):
-    """Network interface up/down."""
+    """Network interface link: connected or not.
+
+    The XML API's InterfaceStatus is the port's on/off switch, not its link
+    (Sophos API docs: "To turn interfaces on or off"). With SNMP the state
+    is IF-MIB ifOperStatus of the same device (matched by the XML Hardware
+    name to ifName): connected only when the link is up. Without SNMP the
+    on/off switch is all there is, and ``link_source`` says so.
+    """
 
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_translation_key = "interface_status"
 
-    def __init__(self, coordinator: SophosXmlCoordinator, iface: Interface) -> None:
+    def __init__(
+        self,
+        coordinator: SophosXmlCoordinator,
+        iface: Interface,
+        snmp: SophosSnmpCoordinator | None = None,
+    ) -> None:
         super().__init__(coordinator, f"iface_{iface.name}", EP_INTERFACES)
         self._name = iface.name
+        self._snmp = snmp
         self._attr_translation_placeholders = {"name": iface.name}
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self._snmp is not None:
+            self.async_on_remove(self._snmp.async_add_listener(self._handle_coordinator_update))
 
     def _iface(self) -> Interface | None:
         return (self.xml.interfaces or {}).get(self._name)
 
+    def _uses_snmp(self) -> bool:
+        return self._snmp is not None and self._snmp.endpoint_enabled(EP_LINKS)
+
+    def _link(self) -> InterfaceLink | None:
+        if self._snmp is None or self._snmp.data is None or (iface := self._iface()) is None:
+            return None
+        if not self._snmp.endpoint_available(EP_LINKS):
+            return None
+        return (self._snmp.data.links or {}).get(iface.hardware or iface.name)
+
     @property
     def is_on(self) -> bool | None:
         iface = self._iface()
-        return iface.is_up if iface else None
+        if iface is None:
+            return None
+        if not self._uses_snmp():
+            return iface.is_up
+        if iface.is_up is False:
+            return False  # switched off: no link, whatever SNMP says
+        link = self._link()
+        if link is None or link.oper_status in (None, IF_OPER_UNKNOWN):
+            return None
+        return link.oper_status == IF_STATUS_UP
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         if (iface := self._iface()) is None:
             return {}
+        link = self._link()
         return {
             "zone": iface.zone,
             "ipv4_assignment": iface.ipv4_assignment,
             "speed": iface.speed,
             "mtu": iface.mtu,
+            "enabled": iface.is_up,
+            "link_source": "snmp" if self._uses_snmp() else "switch",
+            "oper_status": link.oper_status if link else None,
         }
 
 

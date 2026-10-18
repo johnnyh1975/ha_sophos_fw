@@ -127,6 +127,7 @@ EP_HEALTH         = "health"
 EP_HA             = "ha"
 EP_CPU            = "cpu"
 EP_TRAFFIC        = "traffic"
+EP_LINKS          = "links"
 
 # ── XML API ───────────────────────────────────────────────────────────────────
 XML_API_PATH = "/webconsole/APIController"
@@ -277,6 +278,14 @@ OID_IFX_TABLE    = "1.3.6.1.2.1.31.1.1"
 IFX_COL_NAME     = "1"   # ifName
 IFX_COL_HC_IN    = "6"   # ifHCInOctets (Counter64)
 IFX_COL_HC_OUT   = "10"  # ifHCOutOctets (Counter64)
+# IF-MIB ifTable, same ifIndex as ifXTable (RFC 2863). The SFVH answers both
+# columns (field probe 2026-09-27: PortA/PortB up(1), GuestAP down(2)).
+OID_IF_TABLE     = "1.3.6.1.2.1.2.2"
+IF_COL_ADMIN     = "7"   # ifAdminStatus: up(1), down(2), testing(3)
+IF_COL_OPER      = "8"   # ifOperStatus: up(1), down(2), testing(3), unknown(4),
+                         #   dormant(5), notPresent(6), lowerLayerDown(7)
+IF_STATUS_UP     = 1
+IF_OPER_UNKNOWN  = 4
 # Interfaces without traffic entities: loopback and kernel/SFOS helper
 # devices, almost all without traffic. Seen on a real SFVH (SFOS 22): dummy0,
 # ipsec0, sit0, ip6tnl0, gre0, gretap0, erspan0, ifb0 and the QoS devices

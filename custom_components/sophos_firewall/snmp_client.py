@@ -39,6 +39,8 @@ from .const import (
     HEALTH_COL_VALUE,
     HR_COL_PROCESSOR_LOAD,
     INTERNAL_INTERFACE_RE,
+    IF_COL_ADMIN,
+    IF_COL_OPER,
     IFX_COL_HC_IN,
     IFX_COL_HC_OUT,
     IFX_COL_NAME,
@@ -58,6 +60,7 @@ from .const import (
     OID_HA_STATUS,
     OID_HR_PROCESSOR_TABLE,
     OID_HTTP_HITS,
+    OID_IF_TABLE,
     OID_IFX_TABLE,
     OID_IMAP_HITS,
     OID_IPS_VERSION,
@@ -89,6 +92,7 @@ from .models import (
     DeviceInfo,
     HaStatus,
     InterfaceCounters,
+    InterfaceLink,
     License,
     SystemHealth,
     SystemStats,
@@ -594,6 +598,29 @@ class SNMPClient:
                 in_octets=to_int(rx.get(idx)), out_octets=to_int(tx.get(idx))
             )
         return TrafficSample(sampled_at=sampled_at, counters=counters)
+
+    async def get_links(self) -> dict[str, InterfaceLink]:
+        """Return admin and operational state of every interface, keyed by ifName.
+
+        ifTable and ifXTable share the ifIndex; the name comes from ifXTable
+        as for the traffic counters.
+        """
+        names_data, status_data = await _all_or_nothing(
+            self._walk_columns(OID_IFX_TABLE, [IFX_COL_NAME]),
+            self._walk_columns(OID_IF_TABLE, [IF_COL_ADMIN, IF_COL_OPER]),
+        )
+        names = table_column(names_data, OID_IFX_TABLE, IFX_COL_NAME)
+        admin = table_column(status_data, OID_IF_TABLE, IF_COL_ADMIN)
+        oper = table_column(status_data, OID_IF_TABLE, IF_COL_OPER)
+        links: dict[str, InterfaceLink] = {}
+        for idx in sorted(names, key=int):
+            name = to_str(names[idx])
+            if name is None or INTERNAL_INTERFACE_RE.match(name) or name in links:
+                continue
+            links[name] = InterfaceLink(
+                admin_status=to_int(admin.get(idx)), oper_status=to_int(oper.get(idx))
+            )
+        return links
 
     async def get_ha_status(self) -> HaStatus:
         """Return the HA cluster state."""

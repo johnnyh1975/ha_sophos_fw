@@ -202,6 +202,11 @@ IF_NAMES = {
     10: "gre0", 11: "gretap0", 12: "erspan0", 13: "ifb0", 14: "dfq", 15: "GuestAP",
     16: "PortA.40", 17: "PortA.50", 18: "PortA.30", 26: "spq",
 }
+IF_ENTRY = "1.3.6.1.2.1.2.2.1"
+IF_OPER = {
+    1: 1, 2: 2, 3: 1, 4: 2, 5: 2, 6: 1, 7: 1, 10: 2, 11: 2, 12: 2, 13: 1, 14: 2, 15: 2,
+    16: 1, 17: 1, 18: 1, 26: 2,
+}
 FAN_SPEED = f"{SOPHOS}.9.3.1.2"
 PSU_STATUS = f"{SOPHOS}.9.4.1.2"
 
@@ -264,6 +269,10 @@ def sophos_mib(*, hardware: bool = False) -> dict[str, Any]:
         mib[f"{HR_PROCESSOR_LOAD}.{196608 + offset}"] = Integer(load)
     for index, name in IF_NAMES.items():
         mib[f"{IFX_ENTRY}.1.{index}"] = OctetString(name.encode())
+        # ifTable: ifOperStatus as the SFVH answered the probe (2026-09-27);
+        # ifAdminStatus was not probed, up(1) here
+        mib[f"{IF_ENTRY}.7.{index}"] = Integer(1)
+        mib[f"{IF_ENTRY}.8.{index}"] = Integer(IF_OPER[index])
         mib[f"{IFX_ENTRY}.6.{index}"] = Counter64(index * 1_000_000_000)
         mib[f"{IFX_ENTRY}.10.{index}"] = Counter64(index * 100_000_000)
     # services as on the SFVH: anti-spam and HA service untouched (0), SSL VPN

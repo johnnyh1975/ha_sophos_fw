@@ -74,7 +74,11 @@ async def test_unreachable_snmp_does_not_block_setup(
     entry = make_entry()
     await setup_entry(hass, entry)
     assert entry.state is ConfigEntryState.LOADED
-    assert hass.states.get("binary_sensor.5heynexg_iface_porta").state == "on"
+    # XML entities stay; the link state comes from SNMP and is unknown, not
+    # guessed from the port's on/off switch
+    iface = hass.states.get("binary_sensor.5heynexg_iface_porta")
+    assert iface.state == "unknown"
+    assert iface.attributes["enabled"] is True and iface.attributes["link_source"] == "snmp"
     assert hass.states.get("sensor.5heynexg_sensor_memory_percent").state == "unavailable"
 
 

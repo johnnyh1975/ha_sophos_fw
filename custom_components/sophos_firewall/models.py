@@ -219,6 +219,14 @@ class InterfaceTraffic:
 
 
 @dataclass(frozen=True, slots=True)
+class InterfaceLink:
+    """Administrative and operational state of one interface (IF-MIB ifTable)."""
+
+    admin_status: int | None
+    oper_status: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class SnmpData:
     """Data owned by the SNMP coordinator — one field per endpoint."""
 
@@ -231,3 +239,4 @@ class SnmpData:
     ha: HaStatus | None = None
     cpu: dict[str, int | None] | None = None  # core number ("1", "2", …) → load %
     traffic: dict[str, InterfaceTraffic] | None = None  # ifName → counters and rates
+    links: dict[str, InterfaceLink] | None = None  # ifName → link state

@@ -940,3 +940,46 @@ async def test_service_and_license_sensors_follow_their_options(
     await setup_entry(hass, entry)
     ids = [e.entity_id for e in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)]
     assert not [i for i in ids if "_service_" in i or "_license_" in i]
+
+
+# ── Interface link state (IF-MIB) ─────────────────────────────────────────────
+
+
+async def test_interface_shows_the_link_not_the_switch(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """Audit finding: InterfaceStatus is the port's on/off switch. A port
+    that is switched on but has no link must not show "connected"."""
+    from .fake_snmp import IF_ENTRY
+
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    entity_id = f"binary_sensor.{P}_iface_porta"
+    assert _state(hass, entity_id) == STATE_ON
+    assert _attrs(hass, entity_id)["oper_status"] == 1
+    snmp_agent.set(f"{IF_ENTRY}.8.6", Integer(2))  # PortA (ifIndex 6): cable out
+    snmp = entry.runtime_data.snmp
+    snmp.invalidate("links")
+    await snmp.async_refresh()
+    await hass.async_block_till_done()
+    assert _state(hass, entity_id) == STATE_OFF
+    attrs = _attrs(hass, entity_id)
+    assert attrs["enabled"] is True and attrs["link_source"] == "snmp"
+    assert attrs["oper_status"] == 2
+
+
+async def test_switched_off_interface_is_off_even_with_link(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    await setup_entry(hass, make_entry())
+    # PortB: InterfaceStatus OFF in the XML fixture, ifOperStatus up(1)
+    assert _state(hass, f"binary_sensor.{P}_iface_portb") == STATE_OFF
+
+
+async def test_without_snmp_the_switch_is_all_there_is(
+    hass: HomeAssistant, xml_api: FakeSophosApi
+) -> None:
+    await setup_entry(hass, make_entry(snmp_enabled=False))
+    attrs = _attrs(hass, f"binary_sensor.{P}_iface_porta")
+    assert _state(hass, f"binary_sensor.{P}_iface_porta") == STATE_ON
+    assert attrs["link_source"] == "switch" and attrs["oper_status"] is None
