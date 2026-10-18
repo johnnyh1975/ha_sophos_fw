@@ -90,6 +90,9 @@ async def test_dhcp_sensors(hass: HomeAssistant, xml_api: FakeSophosApi) -> None
     }
     assert (attrs["default_lease_time"], attrs["max_lease_time"]) == (1440, 2880)
     assert "lease_range" not in attrs
+    from custom_components.sophos_firewall.sensor import SophosDHCPLeaseSensor
+
+    assert "leases" in SophosDHCPLeaseSensor._unrecorded_attributes  # MACs stay out of the DB
 
 
 async def test_web_filter_default_action_prefers_default_policy(

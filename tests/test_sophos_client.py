@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from collections.abc import AsyncGenerator
 
 import aiohttp
@@ -256,10 +257,10 @@ async def test_write_needs_an_explicit_success_code(
 
     real_post = client._post
 
-    async def _post(xml: str, label: str = "request") -> ET.Element:
+    async def _post(xml: str, label: str = "request", **kwargs: Any) -> ET.Element:
         if "<Set" in xml:
             return ET.fromstring(f"<Response>{answer}</Response>")
-        return await real_post(xml, label)
+        return await real_post(xml, label, **kwargs)
 
     monkeypatch.setattr(client, "_post", _post)
     with pytest.raises(SophosAPIError, match=match):
@@ -495,3 +496,27 @@ def test_real_dhcp_record_with_one_static_lease() -> None:
 
 def test_real_dhcp_record_without_static_leases() -> None:
     assert _parse_real("").static_leases == ()
+
+
+async def test_read_error_before_a_write_is_reported(
+    client: SophosClient, xml_api: FakeSophosApi
+) -> None:
+    """A per-record error on the read keeps its code instead of "not found"."""
+    xml_api.fail_tags["FirewallRule"] = "529"
+    with pytest.raises(SophosAPIError, match="code 529"):
+        await client.set_firewall_rule_status("Block Guest", True)
+
+
+async def test_no_request_between_the_read_and_the_write(
+    client: SophosClient, xml_api: FakeSophosApi
+) -> None:
+    """A poll queued during the read must not run before the write: an edit
+    made in the web admin meanwhile would be overwritten with the old copy."""
+    xml_api.delay = 0.05
+    write = asyncio.create_task(client.set_firewall_rule_status("Block Guest", True))
+    await asyncio.sleep(0.01)  # the write's read is in flight
+    poll = asyncio.create_task(client.get_interfaces())
+    await asyncio.gather(write, poll)
+    assert xml_api.requests[-3:] == [
+        ("get", "FirewallRule"), ("set", "FirewallRule"), ("get", "Interface")
+    ]

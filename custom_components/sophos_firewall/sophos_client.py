@@ -32,6 +32,7 @@ Error model
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Iterable, Mapping
@@ -63,14 +64,16 @@ from .models import (
 
 _LOGGER = logging.getLogger(__name__)
 
-_SUCCESS_CODES = frozenset({"200", "201", "202", ""})
+# Response-level <Status> codes that are no error. Only for that element:
+# a write is confirmed by an explicit 2xx code, see _is_success().
+_RESPONSE_OK_CODES = frozenset({"200", "201", "202", ""})
+_ACCESS_DENIED_CODES = frozenset({"532", "534"})
+_AUTH_FAILED_CODES = frozenset({"535"})
 
 
 def _is_success(code: str) -> bool:
     """A write succeeded only with an explicit 2xx code (SDK: any 2xx)."""
     return len(code) == 3 and code.isdigit() and code.startswith("2")
-_ACCESS_DENIED_CODES = frozenset({"532", "534"})
-_AUTH_FAILED_CODES = frozenset({"535"})
 
 
 class SophosError(Exception):
@@ -301,17 +304,22 @@ class SophosClient:
         """Wrap an operation in the standard request envelope."""
         return f"<Request>{self._login_block()}{body}</Request>"
 
-    async def _post(self, xml: str, label: str = "request") -> ET.Element:
+    async def _post(self, xml: str, label: str = "request", *, slot_held: bool = False) -> ET.Element:
         """POST an XML request and return the parsed <Response> element.
 
         Logs at debug level how long the request waited for its turn
         (XML_MAX_CONCURRENT_REQUESTS) and how long the firewall took.
+        ``slot_held``: the caller already holds the request slot (a read and
+        the write that depends on it must not let other requests in between).
         """
         queued = time.monotonic()
         started: float | None = None
         outcome = "failed"
+        slot: contextlib.AbstractAsyncContextManager[Any] = (
+            contextlib.nullcontext() if slot_held else self._semaphore
+        )
         try:
-            async with self._semaphore:
+            async with slot:
                 started = time.monotonic()
                 async with self._session.post(
                     self._url,
@@ -368,7 +376,7 @@ class SophosClient:
                 raise SophosAccessError(f"API access denied {message}", code=code)
             if code in _AUTH_FAILED_CODES:
                 raise SophosAuthError(f"Authentication failed {message}")
-            if code not in _SUCCESS_CODES:
+            if code not in _RESPONSE_OK_CODES:
                 raise SophosAPIError(f"API request failed {message}")
         return root
 
@@ -384,11 +392,23 @@ class SophosClient:
         return records
 
     async def _get_record_element(self, tag: str, name: str) -> ET.Element:
-        """Fetch one record as the firewall sent it, unparsed."""
-        root = await self._post(self._request(f"<Get><{tag}/></Get>"), label=f"Get {tag}")
+        """Fetch one record as the firewall sent it, unparsed (slot held by caller)."""
+        root = await self._post(
+            self._request(f"<Get><{tag}/></Get>"), label=f"Get {tag}", slot_held=True
+        )
+        error: ET.Element | None = None
         for elem in root.iter(tag):
-            if not _is_status_only(elem) and (elem.findtext("Name") or "").strip() == name:
+            if _is_status_only(elem):
+                status = elem.find("Status")
+                if status is not None and status.get("code"):
+                    error = status
+                continue
+            if (elem.findtext("Name") or "").strip() == name:
                 return elem
+        if error is not None:
+            raise SophosAPIError(
+                f"Reading {tag} failed (code {error.get('code')}): {error.text or ''}".strip()
+            )
         raise SophosAPIError(f"{tag} {name!r} not found on the firewall")
 
     # ── Connection test ───────────────────────────────────────────────────────
@@ -447,15 +467,19 @@ class SophosClient:
         read-modify-write as Sophos' SDK, without re-building the object
         from a template that knows only some of its fields.
         """
-        elem = await self._get_record_element(tag, name)
-        target = elem.find(field)
-        if target is None:
-            raise SophosAPIError(f"{tag} {name!r} has no <{field}> element")
-        target.text = value
-        body = ET.tostring(elem, encoding="unicode")
-        root = await self._post(
-            self._request(f'<Set operation="update">{body}</Set>'), label=f"Set {tag}"
-        )
+        # One slot for read and write: a poll queued in between would let an
+        # edit made in the web admin meanwhile be overwritten by our copy.
+        async with self._semaphore:
+            elem = await self._get_record_element(tag, name)
+            target = elem.find(field)
+            if target is None:
+                raise SophosAPIError(f"{tag} {name!r} has no <{field}> element")
+            target.text = value
+            body = ET.tostring(elem, encoding="unicode")
+            root = await self._post(
+                self._request(f'<Set operation="update">{body}</Set>'),
+                label=f"Set {tag}", slot_held=True,
+            )
         status_el = root.find(f"{tag}/Status")
         if status_el is None:
             raise SophosAPIError(f"Set {tag} {name!r}: the firewall did not confirm the change")

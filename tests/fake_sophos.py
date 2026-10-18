@@ -102,7 +102,7 @@ MANDATORY: dict[str, tuple[str, ...]] = {
 def _from_xml(elem: ET.Element) -> Any:
     """Inverse of _to_xml: repeated tags become lists, leaves become str."""
     if not len(elem):
-        return elem.text or ""
+        return (elem.text or "").strip()  # pretty-printing whitespace is no value
     result: dict[str, Any] = {}
     for child in elem:
         value = _from_xml(child)
@@ -200,8 +200,13 @@ class FakeSophosApi:
             records = self.records.get(tag, [])
             if not records:  # as SFOS answers (Sophos SDK test fixtures): no code
                 return reply(f'{login}<{tag} transactionid=""><Status>Number of records Zero.</Status></{tag}>')
-            body = "".join(_to_xml(tag, rec) for rec in records)
-            return reply(login + body)
+            # as SFOS sends records: transactionid attribute, pretty-printed
+            body = "".join(
+                _to_xml(tag, rec).replace(f"<{tag}>", f'\n  <{tag} transactionid="">', 1)
+                .replace("><", ">\n    <")
+                for rec in records
+            )
+            return reply(login + body + "\n")
 
         if operation == "set":
             elem = request.find(f"Set/{tag}")
@@ -220,6 +225,8 @@ class FakeSophosApi:
             if missing := [f for f in MANDATORY.get(tag, ("Name",)) if f not in new]:
                 params = "".join(f"<Params>/{tag}/{f}</Params>" for f in missing)
                 return reply(f'{login}<{tag} transactionid=""><Status code="501">Configuration parameters validation failed.</Status>{params}</{tag}>')
+            if index is None and set_op == "update":
+                return reply(f'{login}<{tag} transactionid=""><Status code="500">Operation could not be performed on Entity.</Status></{tag}>')
             if index is None:
                 records.append(new)
             else:  # an update replaces the whole object

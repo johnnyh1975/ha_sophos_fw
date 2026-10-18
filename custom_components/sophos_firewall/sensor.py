@@ -515,9 +515,15 @@ class SophosSnmpSensor(SophosSnmpEntity, SensorEntity):
 
 
 class SophosDHCPLeaseSensor(SophosXmlEntity, SensorEntity):
-    """DHCP server state ("on"/"off") with its static leases as attributes."""
+    """DHCP server state ("on"/"off") with its static leases as attributes.
+
+    The lease list is not recorded: it holds every MAC, IP and hostname, and
+    HA stores no attributes at all for a state whose attributes exceed 16 KiB
+    (about 170 leases).
+    """
 
     _attr_translation_key = "dhcp_leases"
+    _unrecorded_attributes = frozenset({"leases"})
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = ["off", "on"]
 

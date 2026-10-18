@@ -212,10 +212,12 @@ def _remove_backup_button(hass: HomeAssistant, entry: SophosConfigEntry) -> None
     now, so the button is gone instead of left "unavailable".
     """
     registry = er.async_get(hass)
-    for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if reg_entry.domain == "button":
-            _LOGGER.info("Removing %s (backup trigger no longer offered)", reg_entry.entity_id)
-            registry.async_remove(reg_entry.entity_id)
+    # Runs after _migrate_unique_ids, so the unique_id has its v2 form.
+    if entity_id := registry.async_get_entity_id(
+        "button", DOMAIN, f"{entry.entry_id}_button_backup"
+    ):
+        _LOGGER.info("Removing %s (backup trigger no longer offered)", entity_id)
+        registry.async_remove(entity_id)
 
 
 def _migrate_unique_ids(hass: HomeAssistant, entry: SophosConfigEntry) -> None:
