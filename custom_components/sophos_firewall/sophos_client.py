@@ -35,7 +35,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape as _xml_escape
@@ -47,6 +47,10 @@ from .const import (
     XML_API_PATH,
     XML_MAX_CONCURRENT_REQUESTS,
     XML_TAG_ADMIN,
+    XML_TAG_IP_HOST,
+    XML_TAG_IP_HOST_GROUP,
+    XML_TAG_URL_GROUP,
+    XML_TAG_WIRELESS_NETWORKS,
     XML_TAG_BACKUP,
     XML_TAG_DHCP_SERVER,
     XML_TAG_FIREWALL_RULE,
@@ -60,6 +64,7 @@ from .models import (
     FirewallRule,
     Interface,
     WebFilterPolicy,
+    WirelessNetwork,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -105,6 +110,23 @@ class SophosAPIError(SophosError):
     """Any other API-level failure."""
 
 
+class SophosNotFoundError(SophosAPIError):
+    """The named record does not exist on the firewall."""
+
+
+class SophosWriteError(SophosAPIError):
+    """A write the firewall rejected, with its record-level status code.
+
+    Codes (SFOS API documentation, "Status Code and Description"): 502 same
+    name exists, 522-525 maximum limit reached, 526 record does not exist,
+    528 default entity not editable, 599 no privilege.
+    """
+
+    def __init__(self, message: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 # ── XML → dict helpers ────────────────────────────────────────────────────────
 
 
@@ -144,6 +166,20 @@ def _path(record: Mapping[str, Any], *keys: str) -> Mapping[str, Any]:
     for key in keys:
         current = current.get(key) if isinstance(current, Mapping) else None
     return current if isinstance(current, Mapping) else {}
+
+
+def _child_ci(elem: ET.Element, tag: str) -> ET.Element | None:
+    """Direct child by tag, ignoring case (SFOS spells some tags both ways)."""
+    wanted = tag.lower()
+    return next((child for child in elem if child.tag.lower() == wanted), None)
+
+
+def _child_text(elem: ET.Element, tag: str) -> str | None:
+    """Stripped text of a direct child, or None."""
+    child = elem.find(tag)
+    if child is None or child.text is None:
+        return None
+    return child.text.strip() or None
 
 
 def _is_status_only(elem: ET.Element) -> bool:
@@ -257,6 +293,18 @@ def parse_backup(record: Mapping[str, Any]) -> BackupSettings:
     return BackupSettings(
         mode=_text(schedule, "BackupMode"),
         frequency=_text(schedule, "BackupFrequency"),
+    )
+
+
+def parse_wireless_network(record: Mapping[str, Any]) -> WirelessNetwork | None:
+    """Parse one <WirelessNetworks> record (keyed by HardwareName, e.g. wlnet1)."""
+    if (hardware := _text(record, "HardwareName")) is None:
+        return None
+    return WirelessNetwork(
+        hardware_name=hardware,
+        name=_text(record, "Name") or hardware,
+        ssid=_text(record, "SSID"),
+        enabled=_equals(_text(record, "Status"), "enable"),
     )
 
 
@@ -391,6 +439,11 @@ class SophosClient:
                 records.append(record)
         return records
 
+    async def _get_record_elements(self, tag: str) -> list[ET.Element]:
+        """Fetch all records of a tag unparsed (per-record errors skipped)."""
+        root = await self._post(self._request(f"<Get><{tag}/></Get>"), label=f"Get {tag}")
+        return [elem for elem in root.iter(tag) if not _is_status_only(elem)]
+
     async def _get_record_element(self, tag: str, name: str) -> ET.Element:
         """Fetch one record as the firewall sent it, unparsed (slot held by caller)."""
         root = await self._post(
@@ -409,7 +462,7 @@ class SophosClient:
             raise SophosAPIError(
                 f"Reading {tag} failed (code {error.get('code')}): {error.text or ''}".strip()
             )
-        raise SophosAPIError(f"{tag} {name!r} not found on the firewall")
+        raise SophosNotFoundError(f"{tag} {name!r} not found on the firewall")
 
     # ── Connection test ───────────────────────────────────────────────────────
 
@@ -454,6 +507,42 @@ class SophosClient:
 
     # ── Write methods ─────────────────────────────────────────────────────────
 
+    def _confirm(self, root: ET.Element, what: str, *paths: str) -> None:
+        """Raise unless the answer confirms the write with a 2xx code.
+
+        The status sits under the entity element (Response/<Tag>/Status); a
+        few writes answer elsewhere (IPsec actions), hence several paths.
+        """
+        status_el = next(
+            (el for path in paths if (el := root.find(path)) is not None), None
+        )
+        if status_el is None:
+            raise SophosAPIError(f"{what}: the firewall did not confirm the change")
+        code = status_el.get("code", "")
+        if not _is_success(code):
+            params = " ".join(p.text or "" for p in root.iter("Params")).strip()
+            detail = f"{status_el.text or ''} {params}".strip()
+            raise SophosWriteError(f"{what} failed (code {code or '?'}): {detail}", code=code)
+
+    async def _modify_record(
+        self, tag: str, name: str, change: Callable[[ET.Element], bool]
+    ) -> None:
+        """Read one record unparsed, let ``change`` edit it, write it all back.
+
+        ``change`` returns False when there is nothing to write (e.g. the URL
+        is already in the group); then no Set is sent.
+        """
+        async with self._semaphore:
+            elem = await self._get_record_element(tag, name)
+            if not change(elem):
+                return
+            body = ET.tostring(elem, encoding="unicode")
+            root = await self._post(
+                self._request(f'<Set operation="update">{body}</Set>'),
+                label=f"Set {tag}", slot_held=True,
+            )
+        self._confirm(root, f"Set {tag} {name!r}", f"{tag}/Status")
+
     async def _update_field(self, tag: str, name: str, field: str, value: str) -> None:
         """Change one field of a record and write the whole record back.
 
@@ -467,27 +556,17 @@ class SophosClient:
         read-modify-write as Sophos' SDK, without re-building the object
         from a template that knows only some of its fields.
         """
-        # One slot for read and write: a poll queued in between would let an
-        # edit made in the web admin meanwhile be overwritten by our copy.
-        async with self._semaphore:
-            elem = await self._get_record_element(tag, name)
+        # One slot for read and write (in _modify_record): a poll queued in
+        # between would let an edit made in the web admin meanwhile be
+        # overwritten by our copy.
+        def change(elem: ET.Element) -> bool:
             target = elem.find(field)
             if target is None:
                 raise SophosAPIError(f"{tag} {name!r} has no <{field}> element")
             target.text = value
-            body = ET.tostring(elem, encoding="unicode")
-            root = await self._post(
-                self._request(f'<Set operation="update">{body}</Set>'),
-                label=f"Set {tag}", slot_held=True,
-            )
-        status_el = root.find(f"{tag}/Status")
-        if status_el is None:
-            raise SophosAPIError(f"Set {tag} {name!r}: the firewall did not confirm the change")
-        code = status_el.get("code", "")
-        if not _is_success(code):
-            params = " ".join(p.text or "" for p in root.iter("Params")).strip()
-            detail = f"{status_el.text or ''} {params}".strip()
-            raise SophosAPIError(f"Set {tag} {name!r} failed (code {code or '?'}): {detail}")
+            return True
+
+        await self._modify_record(tag, name, change)
 
     async def set_firewall_rule_status(self, name: str, enable: bool) -> None:
         """Enable or disable a firewall rule by name."""
@@ -500,6 +579,174 @@ class SophosClient:
         action = "Allow" if allow else "Deny"
         await self._update_field(XML_TAG_WEB_FILTER, name, "DefaultAction", action)
         _LOGGER.debug("WebFilterPolicy %r → %s", name, action)
+
+    # ── URL groups: block / unblock a site ────────────────────────────────────
+
+    async def set_url_in_group(self, group: str, url: str, present: bool) -> bool:
+        """Add a domain to a web filter URL group, or remove it.
+
+        Real shape (Sophos SDK functional test, Ansible integration tests):
+        <WebFilterURLGroup><Name/><Description/><IsDefault>No</IsDefault>
+        <URLlist><URL>a.com</URL>…</URLlist></WebFilterURLGroup>; URLlist is
+        missing when the group is empty, and its tag case varies
+        ("URLlist"/"URLList"), so it is matched case-insensitively and
+        written back as read. Returns False if nothing had to change.
+        """
+        wanted = url.strip().lower()
+        changed = True
+
+        def change(elem: ET.Element) -> bool:
+            nonlocal changed
+            if (_child_text(elem, "IsDefault") or "No").lower() != "no":
+                raise SophosWriteError(
+                    f"URL group {group!r} is a built-in group and cannot be edited", code="528"
+                )
+            url_list = _child_ci(elem, "URLlist")
+            entries = [] if url_list is None else [e for e in url_list if e.tag.lower() == "url"]
+            existing = [e for e in entries if (e.text or "").strip().lower() == wanted]
+            if present:
+                changed = not existing
+                if changed:
+                    if url_list is None:
+                        url_list = ET.SubElement(elem, "URLlist")
+                    ET.SubElement(url_list, "URL").text = wanted
+                return changed
+            changed = bool(existing) and url_list is not None
+            if changed and url_list is not None:
+                for entry in existing:
+                    url_list.remove(entry)
+                if not len(url_list):  # an empty group has no URLlist (SDK, Ansible)
+                    elem.remove(url_list)
+            return changed
+
+        await self._modify_record(XML_TAG_URL_GROUP, group, change)
+        return changed
+
+    # ── IP host groups: block / unblock a device ──────────────────────────────
+
+    async def ensure_ip_host(self, ip: str, name: str) -> str:
+        """Return the name of an IPHost (HostType IP) for ``ip``; create it if needed.
+
+        An existing host with that address is reused whatever its name.
+        """
+        if existing := await self.find_ip_host(ip):
+            return existing
+        root = await self._post(
+            self._request(
+                '<Set operation="add"><IPHost>'
+                f"<Name>{_xml_escape(name)}</Name><IPFamily>IPv4</IPFamily>"
+                f"<HostType>IP</HostType><IPAddress>{_xml_escape(ip)}</IPAddress>"
+                "<Description>Created by Home Assistant</Description>"
+                "</IPHost></Set>"
+            ),
+            label="Set IPHost",
+        )
+        self._confirm(root, f"Add IP host {name!r}", "IPHost/Status")
+        return name
+
+    async def find_ip_host(self, ip: str) -> str | None:
+        """Return the name of the IPHost (HostType IP) with this address, if any."""
+        for elem in await self._get_record_elements(XML_TAG_IP_HOST):
+            if (_child_text(elem, "HostType") or "") == "IP" and (
+                _child_text(elem, "IPAddress") or ""
+            ) == ip:
+                return _child_text(elem, "Name")
+        return None
+
+    async def set_host_in_group(self, group: str, host: str, present: bool) -> bool:
+        """Add an IP host to an IP host group, or remove it.
+
+        The documented and tested way (Sophos SDK, Ansible integration tests)
+        is to update the group with its complete HostList; an empty group has
+        no HostList element. Returns False if nothing had to change.
+        """
+        changed = True
+
+        def change(elem: ET.Element) -> bool:
+            nonlocal changed
+            if (_child_text(elem, "IPFamily") or "IPv4") != "IPv4":
+                raise SophosWriteError(f"IP host group {group!r} is not an IPv4 group")
+            host_list = elem.find("HostList")
+            entries = [] if host_list is None else host_list.findall("Host")
+            existing = [e for e in entries if (e.text or "").strip() == host]
+            if present:
+                changed = not existing
+                if changed:
+                    if host_list is None:
+                        host_list = ET.Element("HostList")
+                        # keep the documented element order: HostList before IPFamily
+                        family = elem.find("IPFamily")
+                        index = list(elem).index(family) if family is not None else len(elem)
+                        elem.insert(index, host_list)
+                    ET.SubElement(host_list, "Host").text = host
+                return changed
+            changed = bool(existing) and host_list is not None
+            if changed and host_list is not None:
+                for entry in existing:
+                    host_list.remove(entry)
+                if not len(host_list):  # an empty group has no HostList (XSOAR recording)
+                    elem.remove(host_list)
+            return changed
+
+        await self._modify_record(XML_TAG_IP_HOST_GROUP, group, change)
+        return changed
+
+    # ── Wireless networks (untested: no appliance with wireless available) ────
+
+    async def get_wireless_networks(self) -> dict[str, WirelessNetwork]:
+        """Return the wireless networks keyed by their HardwareName.
+
+        Fields per the Add/Update Wireless Network page (HardwareName, Name,
+        SSID) and a third-party module (Status Enable/Disable on a Get).
+        """
+        networks: dict[str, WirelessNetwork] = {}
+        for record in await self._get_records(XML_TAG_WIRELESS_NETWORKS):
+            if network := parse_wireless_network(record):
+                networks.setdefault(network.hardware_name, network)
+        return networks
+
+    async def set_wireless_network_status(self, hardware_name: str, enable: bool) -> None:
+        """Switch a wireless network on or off.
+
+        <WirelessNetworkStatus> with the network's HardwareName (API docs:
+        "Enter the name of Interface", max 10 characters; Status "Enable",
+        "Disable"). The display name is rejected (526).
+        """
+        status = "Enable" if enable else "Disable"
+        root = await self._post(
+            self._request(
+                '<Set operation="update"><WirelessNetworkStatus>'
+                f"<Name>{_xml_escape(hardware_name)}</Name><Status>{status}</Status>"
+                "</WirelessNetworkStatus></Set>"
+            ),
+            label="Set WirelessNetworkStatus",
+        )
+        self._confirm(root, f"Wireless network {hardware_name!r}", "WirelessNetworkStatus/Status")
+
+    # ── IPsec (untested: no appliance with IPsec available) ───────────────────
+
+    async def set_ipsec_connection_active(self, name: str, active: bool) -> None:
+        """Activate or deactivate an IPsec connection.
+
+        <VPNIPSecConnection><Active|DeActive><Name/></…> needs only the name
+        (Sophos support in the Sophos Community, thread 142169; the Sophos
+        Ansible collection sends the same elements). Where the answer puts
+        its status is not documented, hence the several paths.
+        """
+        action = "Active" if active else "DeActive"
+        root = await self._post(
+            self._request(
+                f'<Set operation="update"><VPNIPSecConnection><{action}>'
+                f"<Name>{_xml_escape(name)}</Name>"
+                f"</{action}></VPNIPSecConnection></Set>"
+            ),
+            label=f"Set VPNIPSecConnection {action}",
+        )
+        self._confirm(
+            root, f"IPsec connection {name!r}",
+            f"VPNIPSecConnection/{action}/Status", "VPNIPSecConnection/Status",
+            f"{action}/Status", "Configuration/Status",
+        )
 
 
 def _by_name[T: (Interface, FirewallRule, WebFilterPolicy, DhcpServer)](

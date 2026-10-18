@@ -1,0 +1,73 @@
+block_url:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: sophos_firewall
+    url_group:
+      required: true
+      example: "Blocked by Home Assistant"
+      selector:
+        text:
+    url:
+      required: true
+      example: "example.com"
+      selector:
+        text:
+unblock_url:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: sophos_firewall
+    url_group:
+      required: true
+      example: "Blocked by Home Assistant"
+      selector:
+        text:
+    url:
+      required: true
+      example: "example.com"
+      selector:
+        text:
+block_device:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: sophos_firewall
+    host_group:
+      required: true
+      example: "Blocked devices"
+      selector:
+        text:
+    ip_address:
+      required: true
+      example: "192.168.1.50"
+      selector:
+        text:
+    host_name:
+      required: false
+      example: "Kids tablet"
+      selector:
+        text:
+unblock_device:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: sophos_firewall
+    host_group:
+      required: true
+      example: "Blocked devices"
+      selector:
+        text:
+    ip_address:
+      required: true
+      example: "192.168.1.50"
+      selector:
+        text:

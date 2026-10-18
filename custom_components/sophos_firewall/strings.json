@@ -426,6 +426,24 @@
     },
     "no_data": {
       "message": "The Sophos Firewall at {host} returned no usable data: {error}"
+    },
+    "entry_not_found": {
+      "message": "No Sophos Firewall entry with the ID {entry_id}."
+    },
+    "entry_not_loaded": {
+      "message": "{title} is not loaded."
+    },
+    "write_access_disabled": {
+      "message": "{title} does not allow changes. Turn on \"Allow changes\" in the integration's options."
+    },
+    "group_not_found": {
+      "message": "{name} does not exist on the firewall. Create it there first."
+    },
+    "group_not_editable": {
+      "message": "{name} is a built-in group and cannot be changed. Create your own group."
+    },
+    "group_full": {
+      "message": "{name} is full: {error}"
     }
   },
   "issues": {
@@ -436,6 +454,84 @@
     "snmp_unreachable": {
       "title": "{title}: SNMP agent not answering",
       "description": "The SNMP agent of the Sophos Firewall at {host} has not answered for more than 10 minutes since the integration started, so all SNMP sensors are unavailable.\n\nCheck on the firewall:\n- **Administration > SNMP**: the SNMP agent is enabled, and an SNMPv1/v2c community exists whose name matches the community configured in Home Assistant and whose IP address is the one of Home Assistant.\n- **Administration > Device access**: SNMP is allowed for the zone Home Assistant is in.\n\nIf you do not use SNMP, turn it off in the integration's options. This message disappears as soon as the agent answers."
+    }
+  },
+  "services": {
+    "block_url": {
+      "name": "Block site",
+      "description": "Adds a domain to a web filter URL group. Block the group in a web filter policy on the firewall once; the action only changes the group's list. Needs the option \"Allow changes\".",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "The Sophos Firewall entry."
+        },
+        "url_group": {
+          "name": "URL group",
+          "description": "Name of an existing URL group (not a built-in one)."
+        },
+        "url": {
+          "name": "Domain",
+          "description": "Domain name, e.g. example.com; subdomains are included. A path or scheme is dropped."
+        }
+      }
+    },
+    "unblock_url": {
+      "name": "Unblock site",
+      "description": "Removes a domain from a web filter URL group. Needs the option \"Allow changes\".",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "The Sophos Firewall entry."
+        },
+        "url_group": {
+          "name": "URL group",
+          "description": "Name of the URL group."
+        },
+        "url": {
+          "name": "Domain",
+          "description": "Domain name to remove."
+        }
+      }
+    },
+    "block_device": {
+      "name": "Block device",
+      "description": "Adds a device (IPv4 address) to an IP host group. Use the group as the source of a drop or reject rule on the firewall once; the action creates the IP host if needed and only changes the group's members. Needs the option \"Allow changes\".",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "The Sophos Firewall entry."
+        },
+        "host_group": {
+          "name": "IP host group",
+          "description": "Name of an existing IPv4 host group."
+        },
+        "ip_address": {
+          "name": "IP address",
+          "description": "IPv4 address of the device. An existing IP host with this address is reused."
+        },
+        "host_name": {
+          "name": "Host name",
+          "description": "Name for a new IP host (default \"HA <address>\"); max. 50 characters, no comma."
+        }
+      }
+    },
+    "unblock_device": {
+      "name": "Unblock device",
+      "description": "Removes a device from an IP host group. The IP host itself stays. Needs the option \"Allow changes\".",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "The Sophos Firewall entry."
+        },
+        "host_group": {
+          "name": "IP host group",
+          "description": "Name of the IP host group."
+        },
+        "ip_address": {
+          "name": "IP address",
+          "description": "IPv4 address of the device."
+        }
+      }
     }
   }
 }

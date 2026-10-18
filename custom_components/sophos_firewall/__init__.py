@@ -36,7 +36,9 @@ from homeassistant.const import (
 )
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.typing import ConfigType
 from homeassistant.util.hass_dict import HassKey
 
 from .const import (
@@ -55,10 +57,13 @@ from .const import (
 from . import session as xml_session
 from .coordinator import SophosSnmpCoordinator, SophosXmlCoordinator
 from .issues import ISSUE_SNMP_UNREACHABLE, async_clear_all_issues, async_clear_issue
+from .services import async_setup_services
 from .snmp_client import SNMPClient
 from .sophos_client import SophosClient
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 #: Entries whose state is watched to clear their repair issues when disabled.
 _WATCHED: HassKey[set[str]] = HassKey(f"{DOMAIN}_watched_entries")
@@ -76,6 +81,12 @@ class SophosRuntimeData:
 
 
 type SophosConfigEntry = ConfigEntry[SophosRuntimeData]
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the integration's actions (block/unblock site or device)."""
+    async_setup_services(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: SophosConfigEntry) -> bool:

@@ -139,5 +139,19 @@
         }
       }
     }
+  },
+  "services": {
+    "block_url": {
+      "service": "mdi:web-cancel"
+    },
+    "unblock_url": {
+      "service": "mdi:web-check"
+    },
+    "block_device": {
+      "service": "mdi:lan-disconnect"
+    },
+    "unblock_device": {
+      "service": "mdi:lan-connect"
+    }
   }
 }

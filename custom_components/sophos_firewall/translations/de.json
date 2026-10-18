@@ -426,6 +426,24 @@
     },
     "no_data": {
       "message": "Die Sophos Firewall unter {host} hat keine verwertbaren Daten geliefert: {error}"
+    },
+    "entry_not_found": {
+      "message": "Kein Sophos-Firewall-Eintrag mit der ID {entry_id}."
+    },
+    "entry_not_loaded": {
+      "message": "{title} ist nicht geladen."
+    },
+    "write_access_disabled": {
+      "message": "{title} erlaubt keine Änderungen. „Änderungen erlauben“ in den Optionen der Integration einschalten."
+    },
+    "group_not_found": {
+      "message": "{name} gibt es auf der Firewall nicht. Bitte dort zuerst anlegen."
+    },
+    "group_not_editable": {
+      "message": "{name} ist eine vordefinierte Gruppe und lässt sich nicht ändern. Bitte eine eigene Gruppe anlegen."
+    },
+    "group_full": {
+      "message": "{name} ist voll: {error}"
     }
   },
   "issues": {
@@ -436,6 +454,84 @@
     "snmp_unreachable": {
       "title": "{title}: SNMP-Agent antwortet nicht",
       "description": "Der SNMP-Agent der Sophos Firewall unter {host} hat seit dem Start der Integration über 10 Minuten lang nicht geantwortet, daher sind alle SNMP-Sensoren nicht verfügbar.\n\nAuf der Firewall prüfen:\n- **Administration > SNMP**: Der SNMP-Agent ist aktiviert, und es gibt eine SNMPv1/v2c-Community, deren Name mit der in Home Assistant eingetragenen Community übereinstimmt und deren IP-Adresse die von Home Assistant ist.\n- **Administration > Device access**: SNMP ist für die Zone erlaubt, in der Home Assistant steht.\n\nWer SNMP nicht nutzt, schaltet es in den Optionen der Integration ab. Diese Meldung verschwindet, sobald der Agent antwortet."
+    }
+  },
+  "services": {
+    "block_url": {
+      "name": "Seite sperren",
+      "description": "Fügt eine Domain einer URL-Gruppe des Web-Filters hinzu. Die Gruppe einmal in einer Web-Filter-Richtlinie der Firewall sperren; die Aktion ändert nur die Liste der Gruppe. Braucht die Option „Änderungen erlauben“.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "Der Eintrag der Sophos Firewall."
+        },
+        "url_group": {
+          "name": "URL-Gruppe",
+          "description": "Name einer vorhandenen URL-Gruppe (keine vordefinierte)."
+        },
+        "url": {
+          "name": "Domain",
+          "description": "Domainname, z. B. example.com; Subdomains sind eingeschlossen. Pfad oder Schema werden entfernt."
+        }
+      }
+    },
+    "unblock_url": {
+      "name": "Seite freigeben",
+      "description": "Entfernt eine Domain aus einer URL-Gruppe des Web-Filters. Braucht die Option „Änderungen erlauben“.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "Der Eintrag der Sophos Firewall."
+        },
+        "url_group": {
+          "name": "URL-Gruppe",
+          "description": "Name der URL-Gruppe."
+        },
+        "url": {
+          "name": "Domain",
+          "description": "Zu entfernender Domainname."
+        }
+      }
+    },
+    "block_device": {
+      "name": "Gerät sperren",
+      "description": "Fügt ein Gerät (IPv4-Adresse) einer IP-Host-Gruppe hinzu. Die Gruppe einmal als Quelle einer Drop- oder Reject-Regel der Firewall verwenden; die Aktion legt bei Bedarf den IP-Host an und ändert nur die Mitglieder der Gruppe. Braucht die Option „Änderungen erlauben“.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "Der Eintrag der Sophos Firewall."
+        },
+        "host_group": {
+          "name": "IP-Host-Gruppe",
+          "description": "Name einer vorhandenen IPv4-Host-Gruppe."
+        },
+        "ip_address": {
+          "name": "IP-Adresse",
+          "description": "IPv4-Adresse des Geräts. Ein vorhandener IP-Host mit dieser Adresse wird wiederverwendet."
+        },
+        "host_name": {
+          "name": "Hostname",
+          "description": "Name für einen neuen IP-Host (Standard „HA <Adresse>“); höchstens 50 Zeichen, kein Komma."
+        }
+      }
+    },
+    "unblock_device": {
+      "name": "Gerät freigeben",
+      "description": "Entfernt ein Gerät aus einer IP-Host-Gruppe. Der IP-Host selbst bleibt bestehen. Braucht die Option „Änderungen erlauben“.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "Der Eintrag der Sophos Firewall."
+        },
+        "host_group": {
+          "name": "IP-Host-Gruppe",
+          "description": "Name der IP-Host-Gruppe."
+        },
+        "ip_address": {
+          "name": "IP-Adresse",
+          "description": "IPv4-Adresse des Geräts."
+        }
+      }
     }
   }
 }

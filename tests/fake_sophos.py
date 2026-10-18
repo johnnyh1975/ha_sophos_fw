@@ -81,6 +81,28 @@ DEFAULT_RECORDS: dict[str, list[dict[str, Any]]] = {
         {"Name": "Guest_DHCP", "Status": "0", "Interface": "PortC",
          "DefaultLeaseTime": "60", "MaxLeaseTime": "120", "StaticLease": ""},
     ],
+    # Shapes per the Sophos SDK functional test / Ansible integration tests
+    # (URL group, IP host group) and recorded responses (IP host, XSOAR).
+    "WebFilterURLGroup": [
+        {"Name": "HA Blocked Sites", "Description": "", "IsDefault": "No",
+         "URLlist": {"URL": ["games.example", "video.example"]}},
+        {"Name": "Empty Group", "Description": "", "IsDefault": "No"},
+        {"Name": "Built-in Group", "Description": "", "IsDefault": "Yes",
+         "URLlist": {"URL": "builtin.example"}},
+    ],
+    "IPHost": [
+        {"Name": "##ALL_RW", "IPFamily": "IPv4", "HostType": "System Host"},
+        {"Name": "nas", "IPFamily": "IPv4", "HostType": "IP", "IPAddress": "10.10.0.50",
+         "HostGroupList": {"HostGroup": "HA Blocked Devices"}},
+        {"Name": "lab-net", "IPFamily": "IPv4", "HostType": "Network",
+         "IPAddress": "10.20.0.0", "Subnet": "255.255.255.0"},
+    ],
+    "IPHostGroup": [
+        {"Name": "HA Blocked Devices", "Description": "used by rule Block HA",
+         "HostList": {"Host": "nas"}, "IPFamily": "IPv4"},
+        {"Name": "Empty Devices", "Description": "", "IPFamily": "IPv4"},
+        {"Name": "V6 Devices", "Description": "", "IPFamily": "IPv6"},
+    ],
     "BackupRestore": [
         {"ScheduleBackup": {"BackupMode": "Mail", "BackupFrequency": "Monthly"}},
     ],
@@ -96,7 +118,12 @@ DEFAULT_RECORDS: dict[str, list[dict[str, Any]]] = {
 MANDATORY: dict[str, tuple[str, ...]] = {
     "FirewallRule": ("Name", "PolicyType", "Position"),
     "WebFilterPolicy": ("Name", "DefaultAction", "DownloadFileSizeRestriction"),
+    "IPHost": ("Name", "HostType", "IPAddress"),
 }
+# Built-in entities refuse updates (API docs: 528 "Trying to update default
+# entities which are not editable").
+def _is_default(record: dict[str, Any]) -> bool:
+    return str(record.get("IsDefault", "No")).lower() not in ("", "no")
 
 
 def _from_xml(elem: ET.Element) -> Any:
@@ -139,6 +166,8 @@ class FakeSophosApi:
         self.break_gets_after_set: set[str] = set()  # → broken_gets once a <Set> succeeded
         self.reject_sets: set[str] = set()      # tags whose <Set> is rejected
         self.set_operations: list[str] = []     # operation attribute of each <Set>
+        self.ipsec_actions: list[tuple[str, str]] = []  # (Active|DeActive, name)
+        self.set_codes: dict[str, str] = {}     # tag → status code answered to a <Set>
         self.auth_failures_left = 0             # transient auth failures
         self.requests: list[tuple[str, str]] = []  # (operation, tag)
         self.delay = 0.0                        # seconds per request
@@ -211,10 +240,23 @@ class FakeSophosApi:
         if operation == "set":
             elem = request.find(f"Set/{tag}")
             assert elem is not None
+            if code := self.set_codes.get(tag):
+                return reply(f'{login}<{tag} transactionid=""><Status code="{code}">Maximum limit reached for entity.</Status></{tag}>')
             if tag in self.reject_sets:
                 return reply(f'{login}<{tag} transactionid=""><Status code="500">Operation failed</Status></{tag}>')
             set_op = request.find("Set").get("operation", "")  # type: ignore[union-attr]
             self.set_operations.append(set_op)
+            if tag == "WirelessNetworkStatus":
+                hw = elem.findtext("Name")
+                for rec in self.records.get("WirelessNetworks", []):
+                    if rec.get("HardwareName") == hw:
+                        rec["Status"] = elem.findtext("Status") or ""
+                        return reply(f'{login}<{tag}><Status code="200">Configuration applied successfully.</Status></{tag}>')
+                return reply(f'{login}<{tag}><Status code="526">Record does not exist.</Status></{tag}>')
+            if tag == "VPNIPSecConnection":
+                action = elem[0]
+                self.ipsec_actions.append((action.tag, action.findtext("Name") or ""))
+                return reply(f'{login}<{tag}><{action.tag}><Status code="200">Configuration applied successfully.</Status></{action.tag}></{tag}>')
             new = _from_xml(elem)
             records = self.records.setdefault(tag, [])
             index = next(
@@ -225,6 +267,8 @@ class FakeSophosApi:
             if missing := [f for f in MANDATORY.get(tag, ("Name",)) if f not in new]:
                 params = "".join(f"<Params>/{tag}/{f}</Params>" for f in missing)
                 return reply(f'{login}<{tag} transactionid=""><Status code="501">Configuration parameters validation failed.</Status>{params}</{tag}>')
+            if index is not None and set_op == "update" and _is_default(records[index]):
+                return reply(f'{login}<{tag} transactionid=""><Status code="528">Trying to update default entities which are not editable.</Status></{tag}>')
             if index is None and set_op == "update":
                 return reply(f'{login}<{tag} transactionid=""><Status code="500">Operation could not be performed on Entity.</Status></{tag}>')
             if index is None:

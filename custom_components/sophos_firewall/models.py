@@ -75,6 +75,16 @@ class DhcpServer:
 
 
 @dataclass(frozen=True, slots=True)
+class WirelessNetwork:
+    """A wireless network served by the firewall's access points."""
+
+    hardware_name: str  # e.g. "wlnet1" — what the on/off request expects
+    name: str
+    ssid: str | None = None
+    enabled: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class BackupSettings:
     """Scheduled backup configuration."""
 

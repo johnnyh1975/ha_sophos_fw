@@ -143,6 +143,10 @@ XML_TAG_WEB_FILTER     = "WebFilterPolicy"
 XML_TAG_DHCP_SERVER    = "DHCPServer"
 XML_TAG_BACKUP         = "BackupRestore"
 XML_TAG_ADMIN          = "AdminSettings"
+XML_TAG_URL_GROUP      = "WebFilterURLGroup"
+XML_TAG_IP_HOST        = "IPHost"
+XML_TAG_IP_HOST_GROUP  = "IPHostGroup"
+XML_TAG_WIRELESS_NETWORKS = "WirelessNetworks"
 
 # ── SNMP OIDs (Sophos MIB: enterprises.2604.5.1.x) ───────────────────────────
 _BASE = "1.3.6.1.4.1.2604.5.1"
