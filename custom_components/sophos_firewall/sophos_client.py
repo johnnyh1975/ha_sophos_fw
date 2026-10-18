@@ -186,11 +186,32 @@ def parse_web_filter_policy(record: Mapping[str, Any]) -> WebFilterPolicy | None
     return WebFilterPolicy(name=name, default_action=_text(record, "DefaultAction"))
 
 
+def _minutes(record: Mapping[str, Any], key: str) -> int | None:
+    """Return a whole number of minutes, or None if missing or not a number."""
+    value = _text(record, key)
+    return int(value) if value is not None and value.isdigit() else None
+
+
 def parse_dhcp_server(record: Mapping[str, Any]) -> DhcpServer | None:
-    """Parse one <DHCPServer> record including its static leases."""
+    """Parse one <DHCPServer> record including its static leases.
+
+    SFOS wraps every static MAC-IP mapping in its own element::
+
+        <StaticLease>
+          <Lease><HostName>…</HostName><MACAddress>…</MACAddress><IPAddress>…</IPAddress></Lease>
+          <Lease>…</Lease>
+        </StaticLease>
+
+    so ``StaticLease`` arrives as ``{"Lease": {...}}`` (one mapping) or
+    ``{"Lease": [{...}, ...]}`` (several), and as "" when there are none.
+    Up to v1.1.0 the leases were expected directly under ``StaticLease``: all
+    mappings of a server then counted as one lease without fields (#29).
+    The lease times are DefaultLeaseTime and MaxLeaseTime, in minutes.
+    """
     if (name := _text(record, "Name")) is None:
         return None
-    raw = record.get("StaticLease", [])
+    container = record.get("StaticLease")
+    raw = container.get("Lease", []) if isinstance(container, Mapping) else []
     raw_leases = [raw] if isinstance(raw, Mapping) else raw if isinstance(raw, list) else []
     leases: list[dict[str, str]] = []
     for lease in raw_leases:
@@ -205,7 +226,8 @@ def parse_dhcp_server(record: Mapping[str, Any]) -> DhcpServer | None:
         name=name,
         running=None if status is None else status == "1",
         interface=_text(record, "Interface"),
-        lease_time=_text(record, "LeaseTime"),
+        default_lease_time=_minutes(record, "DefaultLeaseTime"),
+        max_lease_time=_minutes(record, "MaxLeaseTime"),
         static_leases=tuple(leases),
     )
 

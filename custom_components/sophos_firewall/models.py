@@ -69,7 +69,8 @@ class DhcpServer:
     name: str
     running: bool | None
     interface: str | None = None
-    lease_time: str | None = None
+    default_lease_time: int | None = None  # minutes
+    max_lease_time: int | None = None  # minutes
     static_leases: tuple[Mapping[str, str], ...] = ()
 
 

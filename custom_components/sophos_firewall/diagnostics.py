@@ -1,7 +1,9 @@
 """Diagnostics for the Sophos Firewall integration.
 
 Credentials, the SNMP community, the appliance serial number and all
-DHCP lease details (MAC, IP, hostname) are redacted.
+DHCP lease details (MAC, IP, hostname) are redacted. For the static leases
+only their number and field names are kept: without them a parser that
+read every mapping as one empty lease (#29) looked like any redacted list.
 """
 from __future__ import annotations
 
@@ -23,8 +25,17 @@ TO_REDACT = {
     CONF_SNMP_COMMUNITY,
     CONF_HOST,
     "serial",
-    "static_leases",
 }
+
+
+def _lease_shape(data: dict[str, Any]) -> None:
+    """Replace each DHCP server's static leases by their count and field names."""
+    for server in (data.get("dhcp_servers") or {}).values():
+        leases = server.get("static_leases") or ()
+        server["static_leases"] = {
+            "count": len(leases),
+            "fields": sorted({key for lease in leases for key in lease}),
+        }
 
 
 def _coordinator_diagnostics(coordinator: SophosCoordinator[Any, Any]) -> dict[str, Any]:
@@ -43,8 +54,17 @@ def _coordinator_diagnostics(coordinator: SophosCoordinator[Any, Any]) -> dict[s
         "last_exception": repr(coordinator.last_exception) if coordinator.last_exception else None,
         "update_interval": str(coordinator.update_interval),
         "endpoints": endpoints,
-        "data": asdict(coordinator.data) if coordinator.data is not None else None,
+        "data": _data(coordinator),
     }
+
+
+def _data(coordinator: SophosCoordinator[Any, Any]) -> dict[str, Any] | None:
+    if coordinator.data is None:
+        return None
+    data: dict[str, Any] = asdict(coordinator.data)
+    if "dhcp_servers" in data:
+        _lease_shape(data)
+    return data
 
 
 async def async_get_config_entry_diagnostics(

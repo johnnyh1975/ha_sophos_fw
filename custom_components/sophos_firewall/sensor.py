@@ -543,7 +543,8 @@ class SophosDHCPLeaseSensor(SophosXmlEntity, SensorEntity):
         return {
             "server_name": server.name,
             "interface": server.interface,
-            "lease_range": server.lease_time,
+            "default_lease_time": server.default_lease_time,
+            "max_lease_time": server.max_lease_time,
             "lease_count": len(server.static_leases),
             "leases": [dict(lease) for lease in server.static_leases],
         }

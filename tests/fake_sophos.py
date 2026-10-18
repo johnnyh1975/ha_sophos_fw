@@ -45,12 +45,16 @@ DEFAULT_RECORDS: dict[str, list[dict[str, Any]]] = {
         {"Name": "Default Policy", "DefaultAction": "Allow"},
     ],
     "DHCPServer": [
-        {"Name": "Main_DHCP", "Status": "1", "Interface": "PortA", "LeaseTime": "1440",
-         "StaticLease": [
-             {"MACAddress": "AA:BB:CC:00:11:22", "IPAddress": "10.10.0.50", "HostName": "nas"},
-             {"MACAddress": "AA:BB:CC:00:11:33", "IPAddress": "10.10.0.51", "HostName": "tv"},
-         ]},
-        {"Name": "Guest_DHCP", "Status": "0", "Interface": "PortC", "LeaseTime": "60"},
+        # Shape as SFOS sends it (#29): every static mapping is its own <Lease>
+        # inside <StaticLease>; lease times are DefaultLeaseTime/MaxLeaseTime.
+        {"Name": "Main_DHCP", "Status": "1", "Interface": "PortA",
+         "DefaultLeaseTime": "1440", "MaxLeaseTime": "2880",
+         "StaticLease": {"Lease": [
+             {"HostName": "nas", "MACAddress": "AA:BB:CC:00:11:22", "IPAddress": "10.10.0.50"},
+             {"HostName": "tv", "MACAddress": "AA:BB:CC:00:11:33", "IPAddress": "10.10.0.51"},
+         ]}},
+        {"Name": "Guest_DHCP", "Status": "0", "Interface": "PortC",
+         "DefaultLeaseTime": "60", "MaxLeaseTime": "120", "StaticLease": ""},
     ],
     "BackupRestore": [
         {"ScheduleBackup": {"BackupMode": "Mail", "BackupFrequency": "Monthly"}},
