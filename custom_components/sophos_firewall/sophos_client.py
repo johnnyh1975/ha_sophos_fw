@@ -64,6 +64,11 @@ from .models import (
 _LOGGER = logging.getLogger(__name__)
 
 _SUCCESS_CODES = frozenset({"200", "201", "202", ""})
+
+
+def _is_success(code: str) -> bool:
+    """A write succeeded only with an explicit 2xx code (SDK: any 2xx)."""
+    return len(code) == 3 and code.isdigit() and code.startswith("2")
 _ACCESS_DENIED_CODES = frozenset({"532", "534"})
 _AUTH_FAILED_CODES = frozenset({"535"})
 
@@ -136,6 +141,17 @@ def _path(record: Mapping[str, Any], *keys: str) -> Mapping[str, Any]:
     for key in keys:
         current = current.get(key) if isinstance(current, Mapping) else None
     return current if isinstance(current, Mapping) else {}
+
+
+def _is_status_only(elem: ET.Element) -> bool:
+    """True for a record element that carries only a <Status>.
+
+    That is a per-record error (<Status code="529">…) or the empty-result
+    marker, which has no code: <Status>Number of records Zero.</Status>
+    (Sophos SDK test fixtures). A real record has fields besides Status.
+    """
+    children = list(elem)
+    return len(children) == 1 and children[0].tag == "Status"
 
 
 def _equals(value: str | None, expected: str) -> bool | None:
@@ -361,15 +377,19 @@ class SophosClient:
         root = await self._post(self._request(f"<Get><{tag}/></Get>"), label=f"Get {tag}")
         records: list[dict[str, Any]] = []
         for elem in root.iter(tag):
-            status_el = elem.find("Status")
-            if status_el is not None and status_el.get("code", "") not in _SUCCESS_CODES:
-                _LOGGER.debug(
-                    "%s record returned status %s — skipped", tag, status_el.get("code")
-                )
+            if _is_status_only(elem):
                 continue
             if record := _elem_to_dict(elem):
                 records.append(record)
         return records
+
+    async def _get_record_element(self, tag: str, name: str) -> ET.Element:
+        """Fetch one record as the firewall sent it, unparsed."""
+        root = await self._post(self._request(f"<Get><{tag}/></Get>"), label=f"Get {tag}")
+        for elem in root.iter(tag):
+            if not _is_status_only(elem) and (elem.findtext("Name") or "").strip() == name:
+                return elem
+        raise SophosAPIError(f"{tag} {name!r} not found on the firewall")
 
     # ── Connection test ───────────────────────────────────────────────────────
 
@@ -414,54 +434,48 @@ class SophosClient:
 
     # ── Write methods ─────────────────────────────────────────────────────────
 
-    async def _set(self, tag: str, body: str, *, operation: str = "") -> None:
-        """Send a <Set> request and check the record-level status."""
-        attr = f' operation="{operation}"' if operation else ""
+    async def _update_field(self, tag: str, name: str, field: str, value: str) -> None:
+        """Change one field of a record and write the whole record back.
+
+        SFOS updates replace the object: the API documentation marks fields
+        such as a rule's PolicyType and Position or a web filter policy's
+        DownloadFileSizeRestriction as mandatory, and Sophos staff and
+        partners state that an update must contain every element of the
+        object. Up to v1.1.0 only Name and the changed field were sent.
+        The record is therefore read unparsed and sent back as the firewall
+        delivered it, with nothing but this one field changed — the same
+        read-modify-write as Sophos' SDK, without re-building the object
+        from a template that knows only some of its fields.
+        """
+        elem = await self._get_record_element(tag, name)
+        target = elem.find(field)
+        if target is None:
+            raise SophosAPIError(f"{tag} {name!r} has no <{field}> element")
+        target.text = value
+        body = ET.tostring(elem, encoding="unicode")
         root = await self._post(
-            self._request(f"<Set{attr}><{tag}>{body}</{tag}></Set>"), label=f"Set {tag}"
+            self._request(f'<Set operation="update">{body}</Set>'), label=f"Set {tag}"
         )
         status_el = root.find(f"{tag}/Status")
-        if status_el is not None and status_el.get("code", "") not in _SUCCESS_CODES:
-            raise SophosAPIError(
-                f"Set {tag} failed (code {status_el.get('code')}): {status_el.text or ''}".strip()
-            )
+        if status_el is None:
+            raise SophosAPIError(f"Set {tag} {name!r}: the firewall did not confirm the change")
+        code = status_el.get("code", "")
+        if not _is_success(code):
+            params = " ".join(p.text or "" for p in root.iter("Params")).strip()
+            detail = f"{status_el.text or ''} {params}".strip()
+            raise SophosAPIError(f"Set {tag} {name!r} failed (code {code or '?'}): {detail}")
 
     async def set_firewall_rule_status(self, name: str, enable: bool) -> None:
         """Enable or disable a firewall rule by name."""
         status = "Enable" if enable else "Disable"
-        await self._set(
-            XML_TAG_FIREWALL_RULE,
-            f"<Name>{_xml_escape(name)}</Name><Status>{status}</Status>",
-        )
+        await self._update_field(XML_TAG_FIREWALL_RULE, name, "Status", status)
         _LOGGER.debug("FirewallRule %r → %s", name, status)
 
     async def set_web_filter_default_action(self, name: str, allow: bool) -> None:
         """Set the DefaultAction of a web filter policy."""
         action = "Allow" if allow else "Deny"
-        await self._set(
-            XML_TAG_WEB_FILTER,
-            f"<Name>{_xml_escape(name)}</Name><DefaultAction>{action}</DefaultAction>",
-        )
+        await self._update_field(XML_TAG_WEB_FILTER, name, "DefaultAction", action)
         _LOGGER.debug("WebFilterPolicy %r → %s", name, action)
-
-    async def trigger_backup(self) -> None:
-        """Trigger an immediate backup without changing the user's settings.
-
-        SFOS has no "run now" endpoint: writing the current BackupRestore
-        schedule back unchanged makes the firewall run a backup cycle.
-        """
-        current = await self.get_backup()
-        mode = current.mode or "Mail"
-        frequency = current.frequency or "Never"
-        await self._set(
-            XML_TAG_BACKUP,
-            "<ScheduleBackup>"
-            f"<BackupMode>{_xml_escape(mode)}</BackupMode>"
-            f"<BackupFrequency>{_xml_escape(frequency)}</BackupFrequency>"
-            "</ScheduleBackup>",
-            operation="add",
-        )
-        _LOGGER.info("Backup triggered on %s (mode=%s, frequency=%s)", self._host, mode, frequency)
 
 
 def _by_name[T: (Interface, FirewallRule, WebFilterPolicy, DhcpServer)](

@@ -103,7 +103,9 @@ async def test_parses_all_record_types(client: SophosClient) -> None:
     assert dhcp["Main_DHCP"].static_leases[0] == {
         "MACAddress": "aa:bb:cc:00:11:22", "IPAddress": "10.10.0.50", "HostName": "nas"
     }
-    assert dhcp["Guest_DHCP"] == DhcpServer("Guest_DHCP", False, "PortC", "60", ())
+    assert dhcp["Main_DHCP"].default_lease_time == 1440
+    assert dhcp["Main_DHCP"].max_lease_time == 2880
+    assert dhcp["Guest_DHCP"] == DhcpServer("Guest_DHCP", False, "PortC", 60, 120, ())
     assert await client.get_backup() == BackupSettings("Mail", "Monthly")
     assert await client.get_admin_settings() == AdminSettings("5HeyneXG")
 
@@ -113,10 +115,13 @@ def test_parsers_tolerate_unexpected_shapes() -> None:
     assert parse_interface({}) is None
     iface = parse_interface({"Name": "X", "InterfaceStatus": {"weird": "1"}})
     assert iface == Interface("X", None)
-    assert parse_dhcp_server({"Name": "D", "StaticLease": {"MACAddress": "AB"}}).static_leases == (
-        {"MACAddress": "ab"},
-    )
+    assert parse_dhcp_server(
+        {"Name": "D", "StaticLease": {"Lease": {"MACAddress": "AB"}}}
+    ).static_leases == ({"MACAddress": "ab"},)
     assert parse_dhcp_server({"Name": "D", "StaticLease": "garbage"}).static_leases == ()
+    assert parse_dhcp_server({"Name": "D", "StaticLease": {"Lease": "x"}}).static_leases == ()
+    server = parse_dhcp_server({"Name": "D", "DefaultLeaseTime": "1 day", "MaxLeaseTime": {}})
+    assert (server.default_lease_time, server.max_lease_time) == (None, None)
 
 
 async def test_record_level_error_skips_only_that_record(client: SophosClient, xml_api: FakeSophosApi) -> None:
@@ -194,33 +199,86 @@ async def test_credentials_are_xml_escaped(
     assert await client.test_connection() == "2200.1"
 
 
-async def test_set_firewall_rule_status(client: SophosClient, xml_api: FakeSophosApi) -> None:
+async def test_set_firewall_rule_status_keeps_the_rest_of_the_rule(
+    client: SophosClient, xml_api: FakeSophosApi
+) -> None:
+    """Audit finding: v1.1.0 sent only Name and Status. SFOS updates need the
+    whole object (PolicyType and Position are mandatory); the rule is read
+    and written back unchanged except for its status."""
+    import copy
+
+    before = copy.deepcopy(xml_api.records["FirewallRule"][1])
     await client.set_firewall_rule_status("Block Guest", True)
-    assert xml_api.records["FirewallRule"][1]["Status"] == "Enable"
+    assert xml_api.requests[-2:] == [("get", "FirewallRule"), ("set", "FirewallRule")]
+    assert xml_api.set_operations == ["update"]
+    assert xml_api.records["FirewallRule"][1] == {**before, "Status": "Enable"}
 
 
-async def test_set_web_filter_default_action(client: SophosClient, xml_api: FakeSophosApi) -> None:
+async def test_set_web_filter_default_action_keeps_the_rule_list(
+    client: SophosClient, xml_api: FakeSophosApi
+) -> None:
+    import copy
+
+    before = copy.deepcopy(xml_api.records["WebFilterPolicy"][0])
     await client.set_web_filter_default_action("Kids", True)
-    assert xml_api.records["WebFilterPolicy"][0]["DefaultAction"] == "Allow"
+    assert xml_api.records["WebFilterPolicy"][0] == {**before, "DefaultAction": "Allow"}
+
+
+async def test_fake_rejects_a_partial_update_like_sfos(client: SophosClient) -> None:
+    """The request v1.1.0 sent: the fake answers it like SFOS (501)."""
+    root = await client._post(client._request(
+        "<Set><FirewallRule><Name>Block Guest</Name><Status>Enable</Status></FirewallRule></Set>"
+    ))
+    status = root.find("FirewallRule/Status")
+    assert status is not None and status.get("code") == "501"
+
+
+async def test_write_of_an_unknown_rule_raises(client: SophosClient) -> None:
+    with pytest.raises(SophosAPIError, match="not found"):
+        await client.set_firewall_rule_status("No such rule", True)
+
+
+@pytest.mark.parametrize(
+    ("answer", "match"),
+    [
+        ("", "did not confirm"),  # no <FirewallRule> element in the answer
+        ('<FirewallRule><Status>done</Status></FirewallRule>', "code \\?"),
+        ('<FirewallRule><Status code="501">Configuration parameters validation failed.'
+         "</Status><Params>/FirewallRule/Position</Params></FirewallRule>", "Position"),
+    ],
+)
+async def test_write_needs_an_explicit_success_code(
+    client: SophosClient, xml_api: FakeSophosApi, monkeypatch: pytest.MonkeyPatch,
+    answer: str, match: str,
+) -> None:
+    """Audit finding: a missing status counted as success."""
+    import xml.etree.ElementTree as ET
+
+    real_post = client._post
+
+    async def _post(xml: str, label: str = "request") -> ET.Element:
+        if "<Set" in xml:
+            return ET.fromstring(f"<Response>{answer}</Response>")
+        return await real_post(xml, label)
+
+    monkeypatch.setattr(client, "_post", _post)
+    with pytest.raises(SophosAPIError, match=match):
+        await client.set_firewall_rule_status("Block Guest", True)
+
+
+async def test_empty_result_is_no_record(client: SophosClient, xml_api: FakeSophosApi) -> None:
+    """SFOS answers an empty table with <Status>Number of records Zero.</Status>
+    and no code; that is not a record."""
+    xml_api.records["FirewallRule"] = []
+    xml_api.records["BackupRestore"] = []
+    assert await client.get_firewall_rules() == {}
+    assert await client.get_backup() == BackupSettings(None, None)
 
 
 async def test_rejected_write_raises(client: SophosClient, xml_api: FakeSophosApi) -> None:
     xml_api.reject_sets.add("FirewallRule")
     with pytest.raises(SophosAPIError):
         await client.set_firewall_rule_status("Block Guest", True)
-
-
-async def test_trigger_backup_writes_current_schedule_back(
-    client: SophosClient, xml_api: FakeSophosApi
-) -> None:
-    await client.trigger_backup()
-    assert xml_api.requests[-2:] == [("get", "BackupRestore"), ("set", "BackupRestore")]
-
-
-async def test_trigger_backup_rejected(client: SophosClient, xml_api: FakeSophosApi) -> None:
-    xml_api.reject_sets.add("BackupRestore")
-    with pytest.raises(SophosAPIError):
-        await client.trigger_backup()
 
 
 def test_firewall_rule_action_nested_in_policy_block() -> None:
@@ -370,7 +428,70 @@ def test_malformed_static_leases_are_skipped() -> None:
 
     server = parse_dhcp_server({
         "Name": "Main_DHCP",
-        "StaticLease": ["junk", {"MACAddress": "AA:BB:CC:00:11:22", "IPAddress": "10.0.0.2"}],
+        "StaticLease": {
+            "Lease": ["junk", {"MACAddress": "AA:BB:CC:00:11:22", "IPAddress": "10.0.0.2"}]
+        },
     })
     assert server is not None
     assert server.static_leases == ({"MACAddress": "aa:bb:cc:00:11:22", "IPAddress": "10.0.0.2"},)
+
+
+# ── DHCP static leases as SFOS sends them (#29) ───────────────────────────────
+
+# Structure of a real <DHCPServer> record: Sophos' own migration utility
+# template (sophos/Sophos-Migration-Utility-CLI, tmpl/DHCPServer.tmpl) and an
+# SFOS export posted in the Sophos Community (thread 145243). Every static
+# mapping is a <Lease> inside <StaticLease>; the lease times are minutes.
+_REAL_DHCP = """<DHCPServer transactionid="">
+  <Name>Default_DHCP_Server</Name>
+  <Status>1</Status>
+  <Interface>PortA</Interface>
+  <IPLease><IP>192.168.1.100-192.168.1.200</IP></IPLease>
+  <StaticLease>{leases}</StaticLease>
+  <ConflictDetection>Enable</ConflictDetection>
+  <SubnetMask>255.255.255.0</SubnetMask>
+  <DefaultLeaseTime>1440</DefaultLeaseTime>
+  <MaxLeaseTime>2880</MaxLeaseTime>
+  <UseApplianceDNSSettings>Disable</UseApplianceDNSSettings>
+</DHCPServer>"""
+
+
+def _lease(i: int) -> str:
+    return (
+        f"<Lease><HostName>host{i}</HostName><MACAddress>AA:BB:CC:00:00:{i:02X}</MACAddress>"
+        f"<IPAddress>192.168.1.{i}</IPAddress></Lease>"
+    )
+
+
+def _parse_real(leases: str) -> DhcpServer:
+    import xml.etree.ElementTree as ET
+
+    from custom_components.sophos_firewall.sophos_client import _elem_to_dict, parse_dhcp_server
+
+    server = parse_dhcp_server(_elem_to_dict(ET.fromstring(_REAL_DHCP.format(leases=leases))))
+    assert server is not None
+    return server
+
+
+def test_real_dhcp_record_with_58_static_leases() -> None:
+    """Regression (#29): 58 mappings came out as lease_count 1, leases [{}]."""
+    server = _parse_real("".join(_lease(i) for i in range(1, 59)))
+    assert len(server.static_leases) == 58
+    assert server.static_leases[0] == {
+        "HostName": "host1", "MACAddress": "aa:bb:cc:00:00:01", "IPAddress": "192.168.1.1"
+    }
+    assert server.static_leases[57]["IPAddress"] == "192.168.1.58"
+    assert (server.default_lease_time, server.max_lease_time) == (1440, 2880)
+    assert server.running is True and server.interface == "PortA"
+
+
+def test_real_dhcp_record_with_one_static_lease() -> None:
+    """A single <Lease> arrives as a mapping, not as a list."""
+    server = _parse_real(_lease(7))
+    assert server.static_leases == (
+        {"HostName": "host7", "MACAddress": "aa:bb:cc:00:00:07", "IPAddress": "192.168.1.7"},
+    )
+
+
+def test_real_dhcp_record_without_static_leases() -> None:
+    assert _parse_real("").static_leases == ()

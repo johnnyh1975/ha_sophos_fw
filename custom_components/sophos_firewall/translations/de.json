@@ -406,11 +406,6 @@
       "web_filter_policy": {
         "name": "Web-Filter {name}"
       }
-    },
-    "button": {
-      "trigger_backup": {
-        "name": "Backup auslösen"
-      }
     }
   },
   "exceptions": {
@@ -425,9 +420,6 @@
     },
     "api_access_denied": {
       "message": "Die Sophos Firewall unter {host} verweigert den API-Zugriff (Code {code}). XML-API aktivieren und die IP-Adresse dieses Home Assistant in der API-Konfiguration der Firewall als erlaubte Adresse eintragen."
-    },
-    "backup_failed": {
-      "message": "Backup konnte nicht ausgelöst werden: {error}. Backup-Konfiguration der Firewall prüfen (z. B. Mail-Server bei E-Mail-Backups)."
     },
     "write_failed": {
       "message": "{name} konnte nicht geändert werden: {error}"

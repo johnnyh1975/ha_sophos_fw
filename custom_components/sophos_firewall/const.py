@@ -13,7 +13,7 @@ from homeassistant.const import Platform
 
 # ── Integration identity ──────────────────────────────────────────────────────
 DOMAIN: Final = "sophos_firewall"
-PLATFORMS: Final = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SENSOR, Platform.SWITCH]
+PLATFORMS: Final = [Platform.BINARY_SENSOR, Platform.SENSOR, Platform.SWITCH]
 MANUFACTURER: Final = "Sophos"
 
 # ── Config entry ──────────────────────────────────────────────────────────────

@@ -99,6 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SophosConfigEntry) -> bo
         password=entry.data[CONF_PASSWORD],
     )
     _migrate_unique_ids(hass, entry)
+    _remove_backup_button(hass, entry)
     xml = SophosXmlCoordinator(hass, entry, client)
     try:
         await xml.async_first_refresh_of(EP_ADMIN)
@@ -198,6 +199,23 @@ async def async_migrate_entry(hass: HomeAssistant, entry: SophosConfigEntry) -> 
         )
         _LOGGER.info("Migrated %s to config entry version 2", entry.title)
     return True
+
+
+@callback
+def _remove_backup_button(hass: HomeAssistant, entry: SophosConfigEntry) -> None:
+    """Remove the "Trigger backup" button of v1.0.x/v1.1.0.
+
+    It wrote the backup schedule back with only mode and frequency: no
+    source shows that this starts a backup, the documented mandatory fields
+    (e-mail address, time) were missing, and without a readable schedule it
+    wrote frequency "Never". The XML API documents no way to start a backup
+    now, so the button is gone instead of left "unavailable".
+    """
+    registry = er.async_get(hass)
+    for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if reg_entry.domain == "button":
+            _LOGGER.info("Removing %s (backup trigger no longer offered)", reg_entry.entity_id)
+            registry.async_remove(reg_entry.entity_id)
 
 
 def _migrate_unique_ids(hass: HomeAssistant, entry: SophosConfigEntry) -> None:

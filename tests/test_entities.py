@@ -7,7 +7,6 @@ from datetime import timedelta
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
-from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN, SERVICE_PRESS
 from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
 from homeassistant.const import (
     ATTR_ENTITY_ID,
@@ -26,7 +25,7 @@ from custom_components.sophos_firewall.diagnostics import async_get_config_entry
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from .conftest import make_entry, setup_entry
-from .fake_snmp import FakeSnmpAgent
+from .fake_snmp import SOPHOS, FakeSnmpAgent, Integer
 from .fake_sophos import FakeSophosApi
 
 P = "5heynexg"
@@ -86,6 +85,11 @@ async def test_dhcp_sensors(hass: HomeAssistant, xml_api: FakeSophosApi) -> None
     assert attrs["lease_count"] == 2
     assert attrs["interface"] == "PortA"
     assert attrs["leases"][0]["MACAddress"] == "aa:bb:cc:00:11:22"
+    assert attrs["leases"][1] == {
+        "HostName": "tv", "MACAddress": "aa:bb:cc:00:11:33", "IPAddress": "10.10.0.51"
+    }
+    assert (attrs["default_lease_time"], attrs["max_lease_time"]) == (1440, 2880)
+    assert "lease_range" not in attrs
 
 
 async def test_web_filter_default_action_prefers_default_policy(
@@ -148,7 +152,7 @@ async def test_snmp_stats_sensors(
     expected = dt_util.utcnow() - timedelta(seconds=6502743)
     assert abs((boot - expected).total_seconds()) < 2
     assert "uptime_seconds" not in _attrs(hass, f"sensor.{P}_sensor_uptime")
-    assert _state(hass, f"sensor.{P}_sensor_ips_version") == "22.1.26"
+    assert _state(hass, f"sensor.{P}_sensor_ips_version") == "18.25.61"
     assert _state(hass, f"sensor.{P}_sensor_webcat_version") == "1.0.1.1207"
 
 
@@ -157,11 +161,11 @@ async def test_services_summary(
 ) -> None:
     await setup_entry(hass, make_entry())
     entity_id = f"sensor.{P}_sensor_services_summary"
-    assert _state(hass, entity_id) == "18"
+    assert _state(hass, entity_id) == "17"
     attrs = _attrs(hass, entity_id)
     assert "unit_of_measurement" not in attrs  # v1.0.x: "/ 21 running"
     assert attrs["total"] == 21
-    assert attrs["stopped"] == ["Anti-Spam", "HA-Service", "Tomcat"]
+    assert attrs["stopped"] == ["Anti-Spam", "HA-Service", "SSL-VPN", "Tomcat"]
     assert attrs["details"]["Tomcat"] is None
 
 
@@ -200,11 +204,25 @@ async def test_vpn_tunnels(
 async def test_ha_entities(
     hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
 ) -> None:
+    snmp_agent.set(f"{SOPHOS}.4.1.0", Integer(1))  # an HA pair: primary + auxiliary
+    snmp_agent.set(f"{SOPHOS}.4.4.0", Integer(3))
+    snmp_agent.set(f"{SOPHOS}.4.5.0", Integer(1))
+    await setup_entry(hass, make_entry(options={"poll_snmp_ha": True}))
+    assert _state(hass, f"binary_sensor.{P}_ha_enabled") == STATE_ON
+    assert _state(hass, f"sensor.{P}_ha_current_state") == "primary"
+    assert _state(hass, f"sensor.{P}_ha_peer_state") == "auxiliary"
+    assert _attrs(hass, f"sensor.{P}_ha_current_state")["state_code"] == 3
+
+
+@pytest.mark.usefixtures("entity_registry_enabled_by_default")
+async def test_ha_entities_without_a_cluster(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """A firewall without HA reports 0 for both roles (field data, SFVH)."""
     await setup_entry(hass, make_entry(options={"poll_snmp_ha": True}))
     assert _state(hass, f"binary_sensor.{P}_ha_enabled") == STATE_OFF
-    assert _state(hass, f"sensor.{P}_ha_current_state") == "standalone"
+    assert _state(hass, f"sensor.{P}_ha_current_state") == "not_applicable"
     assert _state(hass, f"sensor.{P}_ha_peer_state") == "not_applicable"
-    assert _attrs(hass, f"sensor.{P}_ha_current_state")["state_code"] == 2
 
 
 async def test_no_hardware_entities_on_virtual_appliance(
@@ -309,7 +327,8 @@ async def test_web_filter_switch_is_reread_after_write(
     before = xml_api.count("get", "WebFilterPolicy")
     await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id}, blocking=True)
     await hass.async_block_till_done()
-    assert xml_api.count("get", "WebFilterPolicy") == before + 1
+    # one read for the write (the whole policy is sent back), one re-read
+    assert xml_api.count("get", "WebFilterPolicy") == before + 2
     await _tick(hass, freezer, 30)
     assert _state(hass, entity_id) == STATE_ON
 
@@ -339,7 +358,8 @@ async def test_switch_written_during_a_running_cycle_keeps_its_new_state(
     # HA 2026.x the request debouncer then holds it for its 10 s cooldown.
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=11))
     await hass.async_block_till_done(wait_background_tasks=True)
-    assert xml_api.count("get", "FirewallRule") == 3  # setup, the cycle, the re-read
+    # setup, the cycle, the read for the write, the re-read
+    assert xml_api.count("get", "FirewallRule") == 4
     assert _state(hass, entity_id) == STATE_ON
 
 
@@ -371,36 +391,6 @@ async def test_switch_write_timeout_is_translated(
     assert err.value.translation_key == "write_failed"
 
 
-# ── Button ────────────────────────────────────────────────────────────────────
-
-
-async def test_backup_button(hass: HomeAssistant, xml_api: FakeSophosApi) -> None:
-    await setup_entry(hass, make_entry(snmp_enabled=False))
-    await hass.services.async_call(
-        BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: f"button.{P}_button_backup"}, blocking=True
-    )
-    assert xml_api.requests[-1] == ("set", "BackupRestore")
-
-
-async def test_backup_button_failure(hass: HomeAssistant, xml_api: FakeSophosApi) -> None:
-    await setup_entry(hass, make_entry(snmp_enabled=False))
-    xml_api.reject_sets.add("BackupRestore")
-    with pytest.raises(HomeAssistantError) as err:
-        await hass.services.async_call(
-            BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: f"button.{P}_button_backup"}, blocking=True
-        )
-    assert err.value.translation_key == "backup_failed"
-
-
-async def test_button_unavailable_when_firewall_unreachable(
-    hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi
-) -> None:
-    await setup_entry(hass, make_entry(snmp_enabled=False))
-    xml_api.exc = TimeoutError()
-    await _tick(hass, freezer, 30)
-    assert _state(hass, f"button.{P}_button_backup") == STATE_UNAVAILABLE
-
-
 # ── Diagnostics ───────────────────────────────────────────────────────────────
 
 
@@ -417,6 +407,10 @@ async def test_diagnostics_redacts_secrets(
     assert diag["xml"]["endpoints"]["interfaces"]["available"] is True
     assert diag["snmp"]["is_virtual"] is None  # decided after three empty health reads
     assert diag["snmp"]["data"]["stats"]["memory_percent"] == 33
+    # Leases: count and field names only, so a wrong shape (#29) is visible.
+    assert diag["xml"]["data"]["dhcp_servers"]["Main_DHCP"]["static_leases"] == {
+        "count": 2, "fields": ["HostName", "IPAddress", "MACAddress"]
+    }
 
 
 # ── Missing values are unknown, never invented ────────────────────────────────
@@ -632,7 +626,7 @@ async def test_switch_with_failed_reread_is_unavailable_not_stale(
     """If the re-read after a write fails, the old value must not come back."""
     await setup_entry(hass, make_entry(snmp_enabled=False, write_access=True))
     entity_id = f"switch.{P}_switch_webfilter_kids"
-    xml_api.broken_gets.add("WebFilterPolicy")
+    xml_api.break_gets_after_set.add("WebFilterPolicy")
     await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id}, blocking=True)
     await hass.async_block_till_done()
     assert _state(hass, entity_id) == STATE_UNAVAILABLE
@@ -900,7 +894,8 @@ async def test_service_sensors(
 ) -> None:
     await setup_entry(hass, make_entry())
     assert _state(hass, f"sensor.{P}_service_ips") == "running"
-    assert _state(hass, f"sensor.{P}_service_antispam") == "stopped"
+    assert _state(hass, f"sensor.{P}_service_antispam") == "untouched"
+    assert _state(hass, f"sensor.{P}_service_ssl_vpn") == "unregistered"
     assert _state(hass, f"sensor.{P}_service_tomcat") == "unknown"  # not implemented
     attrs = _attrs(hass, f"sensor.{P}_service_ips")
     assert attrs["friendly_name"] == "5HeyneXG Service IPS"

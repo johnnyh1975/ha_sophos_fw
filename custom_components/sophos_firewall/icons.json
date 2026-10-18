@@ -24,11 +24,6 @@
         }
       }
     },
-    "button": {
-      "trigger_backup": {
-        "default": "mdi:backup-restore"
-      }
-    },
     "sensor": {
       "backup_frequency": {
         "default": "mdi:backup-restore"

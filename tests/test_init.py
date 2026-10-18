@@ -50,7 +50,7 @@ async def test_device_registry_combines_xml_and_snmp(
     assert device.name == "5HeyneXG"
     assert device.manufacturer == "Sophos"
     assert device.model == "SFVH_KV01_SFOS"
-    assert device.sw_version == "SFOS 22.0.0 GA-Build411"
+    assert device.sw_version == "22.0.2 MR-2-Build546"
     assert device.serial_number == "C01001D2MQT76C4"
     assert device.configuration_url == "https://127.0.0.1:4444"
 
@@ -280,3 +280,22 @@ async def test_xml_session_is_closed_when_setup_is_cancelled(
     ):
         await async_setup_entry(hass, entry)
     assert len(sessions) == 1 and sessions[0].closed
+
+
+async def test_backup_button_of_older_versions_is_removed(
+    hass: HomeAssistant, xml_api: FakeSophosApi
+) -> None:
+    """The backup trigger is gone (no documented way to start a backup);
+    its entity must not stay behind as "unavailable"."""
+    from homeassistant.helpers import entity_registry as er
+
+    entry = make_entry(snmp_enabled=False)
+    entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        "button", DOMAIN, f"{ENTRY_ID}_button_backup", config_entry=entry,
+        suggested_object_id="5heynexg_button_backup",
+    )
+    await setup_entry(hass, entry)
+    assert registry.async_get("button.5heynexg_button_backup") is None
+    assert not [e for e in er.async_entries_for_config_entry(registry, ENTRY_ID) if e.domain == "button"]

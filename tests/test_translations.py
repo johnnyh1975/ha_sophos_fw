@@ -27,7 +27,6 @@ PLATFORM_FILES = {
     "binary_sensor": "binary_sensor.py",
     "sensor": "sensor.py",
     "switch": "switch.py",
-    "button": "button.py",
 }
 
 # Calls whose translation_key refers to strings.json "exceptions", not "entity".

@@ -406,11 +406,6 @@
       "web_filter_policy": {
         "name": "Web filter {name}"
       }
-    },
-    "button": {
-      "trigger_backup": {
-        "name": "Trigger backup"
-      }
     }
   },
   "exceptions": {
@@ -425,9 +420,6 @@
     },
     "api_access_denied": {
       "message": "The Sophos Firewall at {host} denies API access (code {code}). Enable the XML API and add this Home Assistant's IP address to the allowed addresses in the firewall's API configuration."
-    },
-    "backup_failed": {
-      "message": "Failed to trigger the backup: {error}. Check the firewall's backup configuration (e.g. the mail server for email backups)."
     },
     "write_failed": {
       "message": "Could not change {name}: {error}"

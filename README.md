@@ -7,7 +7,7 @@
 [![Validate](https://github.com/johnnyh1975/ha_sophos_fw/actions/workflows/validate.yml/badge.svg)](https://github.com/johnnyh1975/ha_sophos_fw/actions/workflows/validate.yml)
 [![Typing](https://github.com/johnnyh1975/ha_sophos_fw/actions/workflows/typing.yml/badge.svg)](https://github.com/johnnyh1975/ha_sophos_fw/actions/workflows/typing.yml)
 
-Custom Integration für Firewalls mit **Sophos Firewall OS (SFOS)**, also die Sophos XGS-Hardware und die virtuelle Appliance SFVH. Sie liest den Zustand der Firewall lokal über die **XML-API** und optional über **SNMP**, ohne Cloud und ohne Sophos Central. Mit freigegebenem Schreibzugriff kann sie außerdem Firewall-Regeln und Web-Filter schalten sowie ein Backup auslösen.
+Custom Integration für Firewalls mit **Sophos Firewall OS (SFOS)**, also die Sophos XGS-Hardware und die virtuelle Appliance SFVH. Sie liest den Zustand der Firewall lokal über die **XML-API** und optional über **SNMP**, ohne Cloud und ohne Sophos Central. Mit freigegebenem Schreibzugriff kann sie außerdem Firewall-Regeln und Web-Filter schalten.
 
 Die Einstufung „Platinum“ ist eine **Selbsteinschätzung**: Für Custom Integrations prüft niemand die Quality Scale. Welche Regel wodurch erfüllt ist, steht Regel für Regel in [`quality_scale.yaml`](custom_components/sophos_firewall/quality_scale.yaml). Nachprüfbar belegen lassen sich die CI-Prüfungen: `mypy --strict` und mindestens 95 % Testabdeckung in jedem Modul.
 
@@ -36,7 +36,7 @@ Die Einstufung „Platinum“ ist eine **Selbsteinschätzung**: Für Custom Inte
 
 | Bereich | Quelle | Was du bekommst |
 |---|---|---|
-| Interfaces | XML | Link-Status jedes Ports, Zone, IP-Zuweisung, MTU |
+| Interfaces | XML | Ein/Aus jedes Ports, Zone, IP-Zuweisung, MTU |
 | Traffic | SNMP | Empfangen/Gesendet in Mbit/s pro Interface, übertragene Datenmenge |
 | System | SNMP | CPU (gesamt und pro Kern), RAM, Disk, Swap, letzter Start |
 | Dienste | SNMP | Sammelsensor mit der Zahl laufender Dienste, optional jeder der 21 Dienste einzeln |
@@ -48,7 +48,7 @@ Die Einstufung „Platinum“ ist eine **Selbsteinschätzung**: Für Custom Inte
 | DHCP | XML | Status jedes DHCP-Servers mit seinen statischen Leases |
 | Web-Filter | XML | Standardaktion (Zulassen/Verweigern) |
 | Firewall-Regeln | XML | Aktiv/Inaktiv jeder Regel, schaltbar mit Schreibzugriff |
-| Backup | XML | Backup auslösen (Button), Backup-Häufigkeit |
+| Backup | XML | Backup-Häufigkeit |
 | Reparaturen | — | Hinweise unter *Einstellungen → Reparaturen*, wenn die Firewall den API-Zugriff verweigert oder SNMP nicht antwortet |
 
 Ohne SNMP bleiben die XML-Funktionen: Interfaces, Firewall-Regeln, DHCP, Web-Filter und Backup.
@@ -76,7 +76,7 @@ Die Menüpfade sind die der englischen Oberfläche von SFOS 22.
 
 1. **Backup & firmware → API:** „API configuration“ aktivieren und die IP-Adresse von Home Assistant unter „Allowed IP address“ eintragen. Fehlt das, antwortet die Firewall mit Status 532 oder 534 (oder HTTP 403); die Integration zeigt dann einen Reparaturhinweis.
 2. **Administration → Device access:** HTTPS für die Zone erlauben, in der Home Assistant steht. Die API läuft über den Port der Web-Admin-Konsole, meist 4444.
-3. **Benutzer:** Empfohlen ist ein eigener Administrator für Home Assistant mit einem Profil, das nur lesen darf. Soll Home Assistant Regeln oder Web-Filter schalten, braucht das Profil Schreibrecht für Firewall-Regeln und Web-Filter. Der Button *Backup auslösen* schickt ebenfalls eine Schreibanfrage und braucht deshalb Schreibrecht für Backup.
+3. **Benutzer:** Empfohlen ist ein eigener Administrator für Home Assistant mit einem Profil, das nur lesen darf. Soll Home Assistant Regeln oder Web-Filter schalten, braucht das Profil Schreibrecht für Firewall-Regeln und Web-Filter.
 
 ### SNMP (optional, empfohlen)
 
@@ -154,7 +154,7 @@ Intervalle und Datenquellen wie unter [Optionen](#optionen). Die Standardwerte p
 | Community-String | `public` | wie in Schritt 2; eine geänderte Community wird vor dem Speichern getestet |
 | Änderungen erlauben | aus | wie in Schritt 3 |
 | **Echtzeit**: Intervall | 30 s | 10–300 s; Grundtakt der Integration |
-| Interfaces | an | Link-Status der Interfaces; legt auch fest, für welche Interfaces die Traffic-Raten standardmäßig eingeschaltet werden |
+| Interfaces | an | Ein/Aus der Interfaces; legt auch fest, für welche Interfaces die Traffic-Raten standardmäßig eingeschaltet werden |
 | Systemstatistik (SNMP) | an | CPU, RAM, Disk, Swap, letzter Start, Zähler, Captive-Portal-Nutzer |
 | Dienste (SNMP) | an | Status der 21 Dienste |
 | Interface-Traffic (SNMP) | an | Raten und Datenmengen pro Interface |
@@ -186,14 +186,13 @@ Entity-IDs beginnen mit dem Hostnamen der Firewall, hier `5heynexg` für die Fir
 
 | Entität (Beispiel-ID) | Name | Standard | Hinweis |
 |---|---|---|---|
-| `binary_sensor.5heynexg_iface_porta` | Netz · Interface PortA | an | Verbunden/Getrennt; Attribute `zone`, `ipv4_assignment`, `speed`, `mtu` |
+| `binary_sensor.5heynexg_iface_porta` | Netz · Interface PortA | an | Verbunden/Getrennt = Port in der Firewall ein- oder ausgeschaltet (nicht, ob ein Kabel steckt, siehe [Einschränkungen](#bekannte-einschränkungen)); Attribute `zone`, `ipv4_assignment`, `speed`, `mtu` |
 | `binary_sensor.5heynexg_fwrule_<regel>` | Regel … | aus, Diagnose | nur ohne Schreibzugriff; Attribute `action`, `policy_type`, `ip_family` |
 | `switch.5heynexg_switch_fwrule_<regel>` | Regel … | an, Konfiguration | nur mit Schreibzugriff |
 | `switch.5heynexg_switch_webfilter_<richtlinie>` | Web-Filter … | an, Konfiguration | nur mit Schreibzugriff; an = Zulassen |
-| `sensor.5heynexg_dhcp_leases_<server>` | Netz · DHCP-Leases … | an | In Betrieb/Außer Betrieb; Attribute `server_name`, `interface`, `lease_count`, `leases` und `lease_range` (bleibt bisher leer) |
+| `sensor.5heynexg_dhcp_leases_<server>` | Netz · DHCP-Leases … | an | In Betrieb/Außer Betrieb; Attribute `server_name`, `interface`, `default_lease_time` und `max_lease_time` (Minuten), `lease_count`, `leases` (je `HostName`, `MACAddress`, `IPAddress`) |
 | `sensor.5heynexg_sensor_web_filter_default_action` | Sicherheit · Web-Filter-Standardaktion | an | Zulassen/Verweigern, von der Richtlinie mit „default“ im Namen, sonst von der ersten |
 | `sensor.5heynexg_sensor_backup_frequency` | System · Backup-Häufigkeit | aus, Diagnose | Nie/Täglich/Wöchentlich/Monatlich; nur mit Option „Backup-Zeitplan“ |
-| `button.5heynexg_button_backup` | Backup auslösen | an, Konfiguration | löst ein Backup im eingestellten Backup-Modus aus (z. B. lokal oder per E-Mail); auch ohne die Option „Änderungen erlauben“, aber das API-Profil braucht Schreibrecht für Backup |
 
 ### Aus SNMP
 
@@ -246,7 +245,7 @@ Die Integration fragt ab (*local polling*); die Firewall meldet nichts von sich 
 - **Die XML-API ist langsam.** Die Firewall beantwortet XML-Anfragen nacheinander und braucht pro Anfrage etwa 5 bis 10 Sekunden. Gemessen an einer SFVH: Interfaces 4,6 s, Admin-Einstellungen 10,5 s. Die Integration stellt deshalb immer nur eine Anfrage gleichzeitig; jede hat bis zu 20 Sekunden Zeit.
 - **Beim Start** wartet die Einrichtung nur auf die Admin-Einstellungen, rund 10 Sekunden. Die übrigen XML-Daten folgen im Hintergrund; nach weiteren rund 25 Sekunden sind alle da (gemessen an einer SFVH). Bis dahin stehen deren Entitäten auf „Nicht verfügbar“.
 - **SNMP** ist schnell (meist unter einer Sekunde pro Durchlauf, der erste etwa 2 Sekunden) und startet ebenfalls im Hintergrund.
-- **Nach einem Schaltvorgang** wird genau die geänderte Regel- bzw. Web-Filter-Liste sofort neu gelesen, unabhängig von ihrer Stufe.
+- **Ein Schaltvorgang** liest zuerst die Regel bzw. Richtlinie vollständig, ändert nur den einen Wert und schreibt das ganze Objekt zurück; so verlangt es die API. Danach wird die Liste sofort neu gelesen, unabhängig von ihrer Stufe. Weil jede XML-Anfrage 5 bis 10 Sekunden dauert, braucht ein Schaltvorgang einige Sekunden mehr als früher; der Schalter zeigt den neuen Zustand, sobald die Firewall die Änderung bestätigt hat.
 - **Fällt eine Datenquelle aus,** werden nur die Entitäten dieser Quelle „Nicht verfügbar“. Es werden keine Ersatzwerte wie 0 angezeigt. Die Integration schreibt den Ausfall einmal ins Log und die Erholung ebenfalls einmal.
 - **Traffic-Raten** werden aus zwei aufeinanderfolgenden Zählerständen und der tatsächlich gemessenen Zeit dazwischen berechnet. Nach einem Neustart von Home Assistant ist die erste Rate daher erst nach dem zweiten Durchlauf da. Nach einem Neustart der Firewall wird eine Messung ausgelassen, statt eine falsche Spitze zu zeigen.
 
@@ -259,7 +258,6 @@ Die Integration fragt ab (*local polling*); die Firewall meldet nichts von sich 
 - **Lizenzen nicht verpassen:** Hinweis, wenn ein Lizenzmodul abläuft oder nicht mehr gültig ist.
 - **Zeitgesteuerte Regeln:** Gäste-Internet nur tagsüber freigeben, Kinder-Web-Filter abends verschärfen (Schreibzugriff nötig).
 - **Firewall-Gesundheit:** Warnung bei hoher CPU-Last, voller Disk oder gestopptem Dienst.
-- **Backup vor Änderungen:** Backup per Knopfdruck oder per Automation vor einem Wartungsfenster auslösen.
 
 ---
 
@@ -354,7 +352,10 @@ Weiterführend: [Top-25 geblockte Verbindungen als Dashboard](docs/top25_blocked
 - **Keine Auslastung in Prozent der Leitung:** Die Integration zeigt Traffic nur in Mbit/s. Die Port-Geschwindigkeit steht als Attribut `speed` am Interface; die SFVH meldet dort 0.
 - **„Letzter Start“ nach 497 Tagen:** Der Uptime-Zähler der Firewall ist ein 32-Bit-Wert und läuft nach etwa 497 Tagen über. Danach springt „Letzter Start“ vor, als hätte die Firewall neu gestartet.
 - **Webcat-Version:** SFOS 22 meldet sie teils nicht („not available“). Dann wird die Entität nicht angelegt bzw. nach drei Abfragen ohne Wert entfernt.
-- **Backup-Häufigkeit:** Die Werte Nie/Täglich/Wöchentlich/Monatlich stammen aus der Weboberfläche; die API-Doku listet sie nicht auf, und an einer echten Firewall ist noch keiner geprüft. Ein anderer Wert zeigt „Unbekannt“ und eine einmalige Warnung im Log; bitte dann melden.
+- **Interface „Verbunden“:** Die XML-API liefert als bekannten Wert nur, ob ein Port in der Firewall eingeschaltet ist. Ein eingeschalteter Port ohne Kabel zeigt deshalb „Verbunden“. Den echten Link-Zustand gibt es in einem weiteren Feld, dessen Werte nicht dokumentiert sind; er wird ergänzt, sobald echte Daten vorliegen.
+- **Kein Backup auf Knopfdruck:** Die XML-API dokumentiert keinen Weg, ein Backup sofort auszulösen. Der Button früherer Versionen schrieb dafür den Backup-Zeitplan unvollständig zurück und ist seit 1.1.1 entfernt.
+- **IPv6-DHCP-Server** werden nicht gelesen (eigener Objekttyp in der API).
+- **Backup-Häufigkeit:** Die Werte Nie/Täglich/Wöchentlich/Monatlich stehen so in der Sophos-API-Doku; an einer echten Firewall ist noch keiner geprüft. Ein anderer Wert zeigt „Unbekannt“ und eine einmalige Warnung im Log; bitte dann melden.
 - **Hardware-Sensoren** (Temperaturen, Lüfter, Netzteile) sind an echter XGS-Hardware nicht getestet.
 - **Traffic-Zähler** beginnen nach einem Neustart der Firewall bei 0. Home Assistant erkennt das als Zähler-Reset; die Langzeitstatistik bleibt korrekt.
 - **Kurz fehlende Interfaces:** Fehlt ein Interface beim Start der Firewall kurz, bleiben seine Traffic-Entitäten erhalten; erst nach drei SNMP-Abfragen ohne das Interface werden sie entfernt. Der Link-Status (XML) wird dagegen entfernt, sobald eine erfolgreiche Abfrage das Interface nicht mehr enthält.
@@ -397,7 +398,7 @@ Die beiden Sensoren haben keine Pseudo-Einheit mehr (siehe [Release Notes](relea
        custom_components.sophos_firewall: debug
    ```
    Home Assistant neu starten. Das Debug-Log enthält für jede XML-Anfrage die Wartezeit und die Antwortzeit der Firewall sowie die Dauer der Einrichtung.
-2. Diagnose: *Einstellungen → Geräte & Dienste → Sophos Firewall → ⋮ → Diagnosedaten herunterladen*. Passwort, Benutzername, Community, Host, Seriennummer und die statischen DHCP-Leases sind darin geschwärzt.
+2. Diagnose: *Einstellungen → Geräte & Dienste → Sophos Firewall → ⋮ → Diagnosedaten herunterladen*. Passwort, Benutzername, Community, Host und Seriennummer sind darin geschwärzt; von den statischen DHCP-Leases stehen nur Anzahl und Feldnamen darin.
 3. Beides einem [Issue](https://github.com/johnnyh1975/ha_sophos_fw/issues) anhängen.
 
 ---
@@ -425,6 +426,8 @@ Die beiden Sensoren haben keine Pseudo-Einheit mehr (siehe [Release Notes](relea
 ## Änderungen
 
 Alle Versionen mit Details: [Releases](https://github.com/johnnyh1975/ha_sophos_fw/releases) und [`release-notes/`](release-notes/).
+
+**1.1.1:** Statische DHCP-Leases werden richtig gelesen (#29), dazu die Lease-Dauer. Regel- und Web-Filter-Schalter schreiben das ganze Objekt zurück, wie es die API verlangt. Der Backup-Button ist entfernt. Details in den [Release Notes](release-notes/v1.1.1.md).
 
 **1.1.0**, die wichtigsten Punkte. Die [Release Notes](release-notes/v1.1.0.md) enthalten die vollständige Liste der Änderungen, die bestehende Automationen betreffen können.
 - Neu: CPU-Auslastung, Traffic pro Interface, jeder Dienst und jede Lizenz einzeln, Reparaturhinweise.

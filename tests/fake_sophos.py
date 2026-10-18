@@ -34,15 +34,40 @@ DEFAULT_RECORDS: dict[str, list[dict[str, Any]]] = {
         {"Name": "PortB", "Hardware": "PortB", "InterfaceStatus": "OFF", "NetworkZone": "WAN",
          "IPv4Assignment": "DHCP", "InterfaceSpeed": "Auto Negotiate", "MTU": "1500"},
     ],
+    # SFOS 18+ shape: the action sits in the NetworkPolicy block (Sophos
+    # SDK updatefwrule.j2 and functional tests, Sophos Migration Utility
+    # tmpl/FirewallRule.tmpl). Position, PolicyType and the policy block are
+    # part of every rule; an update has to send them back.
     "FirewallRule": [
-        {"Name": "Allow LAN to IoT", "Status": "Enable", "Action": "Accept",
-         "PolicyType": "Network", "IPFamily": "IPv4"},
-        {"Name": "Block Guest", "Status": "Disable", "Action": "Drop",
-         "PolicyType": "Network", "IPFamily": "IPv4"},
+        {"Name": "Allow LAN to IoT", "Description": "", "IPFamily": "IPv4",
+         "Status": "Enable", "Position": "Top", "PolicyType": "Network",
+         "NetworkPolicy": {
+             "Action": "Accept", "LogTraffic": "Enable", "SkipLocalDestined": "Disable",
+             "SourceZones": {"Zone": ["LAN", "VPN"]}, "DestinationZones": {"Zone": "IoT"},
+             "Schedule": "All The Time",
+         }},
+        {"Name": "Block Guest", "Description": "guests stay out", "IPFamily": "IPv4",
+         "Status": "Disable", "Position": "After", "PolicyType": "Network",
+         "After": {"Name": "Allow LAN to IoT"},
+         "NetworkPolicy": {
+             "Action": "Drop", "LogTraffic": "Disable", "SkipLocalDestined": "Disable",
+             "SourceZones": {"Zone": "Guest"}, "Schedule": "Work hours",
+         }},
     ],
+    # Fields as in a recorded SFOS response (demisto/content SophosXGFirewall
+    # test_data/web_filter_get.xml) plus a RuleList (Sophos SDK template).
     "WebFilterPolicy": [
-        {"Name": "Kids", "DefaultAction": "Deny"},
-        {"Name": "Default Policy", "DefaultAction": "Allow"},
+        {"Name": "Kids", "Description": "", "DefaultAction": "Deny",
+         "EnableReporting": "Enable", "DownloadFileSizeRestriction": "50",
+         "DownloadFileSizeRestrictionEnabled": "1", "EnforceSafeSearch": "1",
+         "RuleList": {"Rule": {
+             "CategoryList": {"Category": {"ID": "Games", "type": "WebCategory"}},
+             "HTTPAction": "Deny", "HTTPSAction": "Deny", "Schedule": "All The Time",
+             "PolicyRuleEnabled": "1",
+         }}},
+        {"Name": "Default Policy", "Description": "", "DefaultAction": "Allow",
+         "EnableReporting": "Enable", "DownloadFileSizeRestriction": "0",
+         "DownloadFileSizeRestrictionEnabled": "0", "EnforceSafeSearch": "0"},
     ],
     "DHCPServer": [
         # Shape as SFOS sends it (#29): every static mapping is its own <Lease>
@@ -63,6 +88,31 @@ DEFAULT_RECORDS: dict[str, list[dict[str, Any]]] = {
         {"HostnameSettings": {"HostName": "5HeyneXG"}},
     ],
 }
+
+
+# Fields the API documentation marks mandatory for an update (21.0 API
+# help: Add/Edit firewall rule; Add/Update web filter policy). An update
+# replaces the stored object, so whatever a request leaves out is lost.
+MANDATORY: dict[str, tuple[str, ...]] = {
+    "FirewallRule": ("Name", "PolicyType", "Position"),
+    "WebFilterPolicy": ("Name", "DefaultAction", "DownloadFileSizeRestriction"),
+}
+
+
+def _from_xml(elem: ET.Element) -> Any:
+    """Inverse of _to_xml: repeated tags become lists, leaves become str."""
+    if not len(elem):
+        return elem.text or ""
+    result: dict[str, Any] = {}
+    for child in elem:
+        value = _from_xml(child)
+        if child.tag in result:
+            if not isinstance(result[child.tag], list):
+                result[child.tag] = [result[child.tag]]
+            result[child.tag].append(value)
+        else:
+            result[child.tag] = value
+    return result
 
 
 def _to_xml(tag: str, value: Any) -> str:
@@ -86,7 +136,9 @@ class FakeSophosApi:
         self.fail_tags: dict[str, str] = {}     # tag → record-level error code
         self.broken_tags: set[str] = set()      # tags answered with a response-level error
         self.broken_gets: set[str] = set()      # like broken_tags, but only for <Get>
+        self.break_gets_after_set: set[str] = set()  # → broken_gets once a <Set> succeeded
         self.reject_sets: set[str] = set()      # tags whose <Set> is rejected
+        self.set_operations: list[str] = []     # operation attribute of each <Set>
         self.auth_failures_left = 0             # transient auth failures
         self.requests: list[tuple[str, str]] = []  # (operation, tag)
         self.delay = 0.0                        # seconds per request
@@ -145,7 +197,10 @@ class FakeSophosApi:
         if operation == "get":
             if code := self.fail_tags.get(tag):
                 return reply(f'{login}<{tag} transactionid=""><Status code="{code}">failed</Status></{tag}>')
-            body = "".join(_to_xml(tag, rec) for rec in self.records.get(tag, []))
+            records = self.records.get(tag, [])
+            if not records:  # as SFOS answers (Sophos SDK test fixtures): no code
+                return reply(f'{login}<{tag} transactionid=""><Status>Number of records Zero.</Status></{tag}>')
+            body = "".join(_to_xml(tag, rec) for rec in records)
             return reply(login + body)
 
         if operation == "set":
@@ -153,12 +208,24 @@ class FakeSophosApi:
             assert elem is not None
             if tag in self.reject_sets:
                 return reply(f'{login}<{tag} transactionid=""><Status code="500">Operation failed</Status></{tag}>')
-            name = elem.findtext("Name")
-            for rec in self.records.get(tag, []):
-                if name is not None and rec.get("Name") == name:
-                    for child in elem:
-                        if child.tag != "Name":
-                            rec[child.tag] = child.text or ""
+            set_op = request.find("Set").get("operation", "")  # type: ignore[union-attr]
+            self.set_operations.append(set_op)
+            new = _from_xml(elem)
+            records = self.records.setdefault(tag, [])
+            index = next(
+                (i for i, rec in enumerate(records) if rec.get("Name") == new.get("Name")), None
+            )
+            if set_op == "add" and index is not None:
+                return reply(f'{login}<{tag} transactionid=""><Status code="502">Operation failed. Entity having same name already exists.</Status></{tag}>')
+            if missing := [f for f in MANDATORY.get(tag, ("Name",)) if f not in new]:
+                params = "".join(f"<Params>/{tag}/{f}</Params>" for f in missing)
+                return reply(f'{login}<{tag} transactionid=""><Status code="501">Configuration parameters validation failed.</Status>{params}</{tag}>')
+            if index is None:
+                records.append(new)
+            else:  # an update replaces the whole object
+                records[index] = new
+            if tag in self.break_gets_after_set:
+                self.broken_gets.add(tag)
             return reply(f'{login}<{tag} transactionid=""><Status code="200">Configuration applied successfully.</Status></{tag}>')
 
         return reply(login)

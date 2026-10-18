@@ -207,33 +207,39 @@ PSU_STATUS = f"{SOPHOS}.9.4.1.2"
 
 
 def sophos_mib(*, hardware: bool = False) -> dict[str, Any]:
-    """Return a realistic SFOS MIB (virtual appliance unless hardware=True)."""
+    """Return an SFOS MIB as a real SFVH answers (hardware=True: XGS sensors).
+
+    Values and SNMP types follow SOPHOS-XG-MIB and the field data of an SFVH
+    on SFOS 22.0.2 MR-2 (diagnostics, 2026-09-27); the hardware part follows
+    the MIB only (no hardware appliance was available).
+    """
     mib: dict[str, Any] = {
         # device info
         f"{SOPHOS}.1.1.0": OctetString(b"5HeyneXG"),
         f"{SOPHOS}.1.2.0": OctetString(b"SFVH_KV01_SFOS"),
-        f"{SOPHOS}.1.3.0": OctetString(b"SFOS 22.0.0 GA-Build411"),
+        f"{SOPHOS}.1.3.0": OctetString(b"22.0.2 MR-2-Build546"),  # no "SFOS " prefix
         f"{SOPHOS}.1.4.0": OctetString(b"C01001D2MQT76C4"),
         f"{SOPHOS}.1.5.0": OctetString(b"1.0.1.1207"),
-        f"{SOPHOS}.1.6.0": OctetString(b"22.1.26"),
+        f"{SOPHOS}.1.6.0": OctetString(b"18.25.61"),
         # stats
         f"{SOPHOS}.2.1.0": OctetString(b"Sun Sep 27 09:00:00 2026"),
         f"{SOPHOS}.2.2.0": TimeTicks(650274300),  # 75 d 6 h 19 min
-        f"{SOPHOS}.2.4.1.0": Integer(11969),
-        f"{SOPHOS}.2.4.2.0": Integer(27),
-        f"{SOPHOS}.2.5.1.0": Integer(72383),
-        f"{SOPHOS}.2.5.2.0": Integer(33),
-        f"{SOPHOS}.2.5.3.0": Integer(4095),
-        f"{SOPHOS}.2.5.4.0": Integer(23),
-        f"{SOPHOS}.2.6.0": Integer(1),
+        # Gauge32 per MIB; disk 72383 MB and memory 11969 MB as on the SFVH
+        f"{SOPHOS}.2.4.1.0": Gauge(72383),
+        f"{SOPHOS}.2.4.2.0": Gauge(27),
+        f"{SOPHOS}.2.5.1.0": Gauge(11969),
+        f"{SOPHOS}.2.5.2.0": Gauge(33),
+        f"{SOPHOS}.2.5.3.0": Gauge(4095),
+        f"{SOPHOS}.2.5.4.0": Gauge(23),
+        f"{SOPHOS}.2.6.0": Gauge(1),
         f"{SOPHOS}.2.7.0": Counter64(21355078),
         f"{SOPHOS}.2.8.0": Counter64(0),
         f"{SOPHOS}.2.9.1.0": Counter64(12),
         f"{SOPHOS}.2.9.2.0": Counter64(47),
         f"{SOPHOS}.2.9.3.0": Counter64(19),
-        # HA
+        # HA disabled: both roles 0 (not applicable), as on the SFVH
         f"{SOPHOS}.4.1.0": Integer(0),
-        f"{SOPHOS}.4.4.0": Integer(2),
+        f"{SOPHOS}.4.4.0": Integer(0),
         f"{SOPHOS}.4.5.0": Integer(0),
         # VPN tunnel table (sfosIPSecVpnTunnelTable): name(2), tunnels(8), status(9), activated(10)
         f"{VPN_ENTRY}.2.1": OctetString(b"Azure-VPN"),
@@ -260,10 +266,11 @@ def sophos_mib(*, hardware: bool = False) -> dict[str, Any]:
         mib[f"{IFX_ENTRY}.1.{index}"] = OctetString(name.encode())
         mib[f"{IFX_ENTRY}.6.{index}"] = Counter64(index * 1_000_000_000)
         mib[f"{IFX_ENTRY}.10.{index}"] = Counter64(index * 100_000_000)
-    # services: all running except anti-spam (1) and HA service (1); tomcat unimplemented
+    # services as on the SFVH: anti-spam and HA service untouched (0), SSL VPN
+    # unregistered (7), the rest running; tomcat left out (missing OID case)
     for i in range(1, 22):
         if i != 13:
-            mib[f"{SOPHOS}.3.{i}.0"] = Integer(1 if i in (7, 9) else 3)
+            mib[f"{SOPHOS}.3.{i}.0"] = Integer({7: 0, 9: 0, 14: 7}.get(i, 3))
     # licenses: base fw subscribed, net protect evaluating, enh plus not subscribed
     statuses = {1: 3, 2: 1, 3: 3, 4: 4, 5: 2, 6: 3, 7: 0, 8: 2, 9: 5}
     expiries = {1: b"Dec 31 2999", 2: b"Oct 15 2026", 3: b"Mar 1 2027", 4: b"Jan 5 2026"}
@@ -274,14 +281,10 @@ def sophos_mib(*, hardware: bool = False) -> dict[str, Any]:
         mib.update({
             f"{SOPHOS}.9.1.0": Integer(650),   # NPU 65.0 °C
             f"{SOPHOS}.9.2.0": Integer(420),   # CPU 42.0 °C
-            f"{SOPHOS}.9.3.1.1.1": Integer(1),
-            f"{SOPHOS}.9.3.1.1.2": Integer(2),
-            f"{SOPHOS}.9.3.1.1.3": Integer(3),
+            # fan/PSU index columns are not-accessible (MIB): never answered
             f"{FAN_SPEED}.1": Gauge(3000),
             f"{FAN_SPEED}.2": Gauge(3150),
             f"{FAN_SPEED}.3": Gauge(2900),
-            f"{SOPHOS}.9.4.1.1.1": Integer(1),
-            f"{SOPHOS}.9.4.1.1.2": Integer(2),
             f"{PSU_STATUS}.1": Integer(1),
             f"{PSU_STATUS}.2": Integer(2),
         })
