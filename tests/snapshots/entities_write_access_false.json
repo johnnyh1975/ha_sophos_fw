@@ -89,15 +89,6 @@
     "unique_id": "sophos_test_entry_vpn_3",
     "unit": null
   },
-  "button.5heynexg_button_backup": {
-    "device_class": null,
-    "disabled_by_default": false,
-    "entity_category": "config",
-    "state_class": null,
-    "translation_key": "trigger_backup",
-    "unique_id": "sophos_test_entry_button_backup",
-    "unit": null
-  },
   "sensor.5heynexg_dhcp_leases_guest_dhcp": {
     "device_class": "enum",
     "disabled_by_default": false,

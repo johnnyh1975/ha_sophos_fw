@@ -69,12 +69,16 @@
             "data": {
               "interval_fast": "Intervall (Sekunden)",
               "poll_snmp_tunnels": "IPsec-VPN-Verbindungen (SNMP)",
-              "poll_snmp_ha": "Hochverfügbarkeits-Cluster (SNMP)"
+              "poll_snmp_ha": "Hochverfügbarkeits-Cluster (SNMP)",
+              "poll_snmp_wifi": "Access Points (SNMP)",
+              "poll_snmp_poe": "PoE-Leistung (SNMP)"
             },
             "data_description": {
               "interval_fast": "60–600 s.",
               "poll_snmp_tunnels": "Ein Verbindungssensor pro IPsec-Verbindung.",
-              "poll_snmp_ha": "Nur sinnvoll, wenn die Firewall als Hochverfügbarkeits-Paar läuft."
+              "poll_snmp_ha": "Nur sinnvoll, wenn die Firewall als Hochverfügbarkeits-Paar läuft.",
+              "poll_snmp_wifi": "Verbindung und Anzahl der Clients der Sophos-Access-Points, die die Firewall verwaltet. An echter Hardware noch nicht getestet.",
+              "poll_snmp_poe": "Leistung pro PoE-Port bei Modellen mit PoE. An echter Hardware noch nicht getestet."
             }
           },
           "operative": {
@@ -83,12 +87,14 @@
             "data": {
               "interval_operative": "Intervall (Sekunden)",
               "poll_xml_fw_rules": "Firewall-Regeln",
-              "poll_snmp_health": "Hardware-Zustand (SNMP)"
+              "poll_snmp_health": "Hardware-Zustand (SNMP)",
+              "poll_xml_wireless": "WLAN-Netze"
             },
             "data_description": {
               "interval_operative": "60–3600 s. Ein in Home Assistant umgeschalteter Schalter wird sofort neu gelesen.",
               "poll_xml_fw_rules": "Aktiv/Inaktiv-Status jeder Firewall-Regel.",
-              "poll_snmp_health": "Temperaturen, Lüfter und Netzteile. Stoppt auf virtuellen Appliances automatisch."
+              "poll_snmp_health": "Temperaturen, Lüfter und Netzteile. Stoppt auf virtuellen Appliances automatisch.",
+              "poll_xml_wireless": "Ein/Aus der WLAN-Netze von Sophos-Access-Points (eine XML-Anfrage mehr pro Durchlauf). An echter Hardware noch nicht getestet."
             }
           },
           "static": {
@@ -193,12 +199,16 @@
             "data": {
               "interval_fast": "Intervall (Sekunden)",
               "poll_snmp_tunnels": "IPsec-VPN-Verbindungen (SNMP)",
-              "poll_snmp_ha": "Hochverfügbarkeits-Cluster (SNMP)"
+              "poll_snmp_ha": "Hochverfügbarkeits-Cluster (SNMP)",
+              "poll_snmp_wifi": "Access Points (SNMP)",
+              "poll_snmp_poe": "PoE-Leistung (SNMP)"
             },
             "data_description": {
               "interval_fast": "60–600 s.",
               "poll_snmp_tunnels": "Ein Verbindungssensor pro IPsec-Verbindung.",
-              "poll_snmp_ha": "Nur sinnvoll, wenn die Firewall als Hochverfügbarkeits-Paar läuft."
+              "poll_snmp_ha": "Nur sinnvoll, wenn die Firewall als Hochverfügbarkeits-Paar läuft.",
+              "poll_snmp_wifi": "Verbindung und Anzahl der Clients der Sophos-Access-Points, die die Firewall verwaltet. An echter Hardware noch nicht getestet.",
+              "poll_snmp_poe": "Leistung pro PoE-Port bei Modellen mit PoE. An echter Hardware noch nicht getestet."
             }
           },
           "operative": {
@@ -207,12 +217,14 @@
             "data": {
               "interval_operative": "Intervall (Sekunden)",
               "poll_xml_fw_rules": "Firewall-Regeln",
-              "poll_snmp_health": "Hardware-Zustand (SNMP)"
+              "poll_snmp_health": "Hardware-Zustand (SNMP)",
+              "poll_xml_wireless": "WLAN-Netze"
             },
             "data_description": {
               "interval_operative": "60–3600 s. Ein in Home Assistant umgeschalteter Schalter wird sofort neu gelesen.",
               "poll_xml_fw_rules": "Aktiv/Inaktiv-Status jeder Firewall-Regel.",
-              "poll_snmp_health": "Temperaturen, Lüfter und Netzteile. Stoppt auf virtuellen Appliances automatisch."
+              "poll_snmp_health": "Temperaturen, Lüfter und Netzteile. Stoppt auf virtuellen Appliances automatisch.",
+              "poll_xml_wireless": "Ein/Aus der WLAN-Netze von Sophos-Access-Points (eine XML-Anfrage mehr pro Durchlauf). An echter Hardware noch nicht getestet."
             }
           },
           "static": {
@@ -257,6 +269,12 @@
       },
       "psu_status": {
         "name": "System · Netzteil {psu}"
+      },
+      "wireless_network": {
+        "name": "Netz · WLAN {name}"
+      },
+      "access_point": {
+        "name": "Netz · Access Point {name}"
       }
     },
     "sensor": {
@@ -397,6 +415,12 @@
           "expired": "Abgelaufen",
           "deactivated": "Deaktiviert"
         }
+      },
+      "access_point_clients": {
+        "name": "Netz · Access Point {name} Clients"
+      },
+      "poe_power": {
+        "name": "System · PoE {port}"
       }
     },
     "switch": {
@@ -405,11 +429,12 @@
       },
       "web_filter_policy": {
         "name": "Web-Filter {name}"
-      }
-    },
-    "button": {
-      "trigger_backup": {
-        "name": "Backup auslösen"
+      },
+      "wireless_network": {
+        "name": "WLAN {name}"
+      },
+      "ipsec_connection": {
+        "name": "IPsec {name}"
       }
     }
   },
@@ -426,14 +451,35 @@
     "api_access_denied": {
       "message": "Die Sophos Firewall unter {host} verweigert den API-Zugriff (Code {code}). XML-API aktivieren und die IP-Adresse dieses Home Assistant in der API-Konfiguration der Firewall als erlaubte Adresse eintragen."
     },
-    "backup_failed": {
-      "message": "Backup konnte nicht ausgelöst werden: {error}. Backup-Konfiguration der Firewall prüfen (z. B. Mail-Server bei E-Mail-Backups)."
-    },
     "write_failed": {
       "message": "{name} konnte nicht geändert werden: {error}"
     },
     "no_data": {
       "message": "Die Sophos Firewall unter {host} hat keine verwertbaren Daten geliefert: {error}"
+    },
+    "entry_not_found": {
+      "message": "Kein Sophos-Firewall-Eintrag mit der ID {entry_id}."
+    },
+    "entry_not_loaded": {
+      "message": "{title} ist nicht geladen."
+    },
+    "write_access_disabled": {
+      "message": "{title} erlaubt keine Änderungen. „Änderungen erlauben“ in den Optionen der Integration einschalten."
+    },
+    "group_not_found": {
+      "message": "{name} gibt es auf der Firewall nicht. Bitte dort zuerst anlegen."
+    },
+    "group_not_editable": {
+      "message": "{name} ist eine vordefinierte Gruppe und lässt sich nicht ändern. Bitte eine eigene Gruppe anlegen."
+    },
+    "group_full": {
+      "message": "{name} ist voll: {error}"
+    },
+    "host_name_taken": {
+      "message": "Es gibt schon einen IP-Host namens {name} mit einer anderen Adresse. Wähle einen anderen host_name."
+    },
+    "write_not_applied": {
+      "message": "{name}: Die Firewall hat die Änderung bestätigt, aber beim Nachlesen ist sie nicht da. Bitte prüfe die Gruppe in der Weboberfläche."
     }
   },
   "issues": {
@@ -444,6 +490,84 @@
     "snmp_unreachable": {
       "title": "{title}: SNMP-Agent antwortet nicht",
       "description": "Der SNMP-Agent der Sophos Firewall unter {host} hat seit dem Start der Integration über 10 Minuten lang nicht geantwortet, daher sind alle SNMP-Sensoren nicht verfügbar.\n\nAuf der Firewall prüfen:\n- **Administration > SNMP**: Der SNMP-Agent ist aktiviert, und es gibt eine SNMPv1/v2c-Community, deren Name mit der in Home Assistant eingetragenen Community übereinstimmt und deren IP-Adresse die von Home Assistant ist.\n- **Administration > Device access**: SNMP ist für die Zone erlaubt, in der Home Assistant steht.\n\nWer SNMP nicht nutzt, schaltet es in den Optionen der Integration ab. Diese Meldung verschwindet, sobald der Agent antwortet."
+    }
+  },
+  "services": {
+    "block_url": {
+      "name": "Seite sperren",
+      "description": "Fügt eine Domain einer URL-Gruppe des Web-Filters hinzu. Die Gruppe einmal in einer Web-Filter-Richtlinie der Firewall sperren; die Aktion ändert nur die Liste der Gruppe. Braucht die Option „Änderungen erlauben“.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "Der Eintrag der Sophos Firewall."
+        },
+        "url_group": {
+          "name": "URL-Gruppe",
+          "description": "Name einer vorhandenen URL-Gruppe (keine vordefinierte)."
+        },
+        "url": {
+          "name": "Domain",
+          "description": "Domainname, z. B. example.com; Subdomains sind eingeschlossen. Pfad oder Schema werden entfernt."
+        }
+      }
+    },
+    "unblock_url": {
+      "name": "Seite freigeben",
+      "description": "Entfernt eine Domain aus einer URL-Gruppe des Web-Filters. Braucht die Option „Änderungen erlauben“.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "Der Eintrag der Sophos Firewall."
+        },
+        "url_group": {
+          "name": "URL-Gruppe",
+          "description": "Name der URL-Gruppe."
+        },
+        "url": {
+          "name": "Domain",
+          "description": "Zu entfernender Domainname."
+        }
+      }
+    },
+    "block_device": {
+      "name": "Gerät sperren",
+      "description": "Fügt ein Gerät (IPv4-Adresse) einer IP-Host-Gruppe hinzu. Die Gruppe einmal als Quelle einer Drop- oder Reject-Regel der Firewall verwenden; die Aktion legt bei Bedarf den IP-Host an und ändert nur die Mitglieder der Gruppe. Braucht die Option „Änderungen erlauben“.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "Der Eintrag der Sophos Firewall."
+        },
+        "host_group": {
+          "name": "IP-Host-Gruppe",
+          "description": "Name einer vorhandenen IPv4-Host-Gruppe."
+        },
+        "ip_address": {
+          "name": "IP-Adresse",
+          "description": "IPv4-Adresse des Geräts. Ein vorhandener IP-Host mit dieser Adresse wird wiederverwendet."
+        },
+        "host_name": {
+          "name": "Hostname",
+          "description": "Name für einen neuen IP-Host (Standard: „HA“ und die Adresse, z. B. „HA 192.168.1.50“); höchstens 50 Zeichen, kein Komma."
+        }
+      }
+    },
+    "unblock_device": {
+      "name": "Gerät freigeben",
+      "description": "Entfernt ein Gerät aus einer IP-Host-Gruppe. Der IP-Host selbst bleibt bestehen. Braucht die Option „Änderungen erlauben“.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "Der Eintrag der Sophos Firewall."
+        },
+        "host_group": {
+          "name": "IP-Host-Gruppe",
+          "description": "Name der IP-Host-Gruppe."
+        },
+        "ip_address": {
+          "name": "IP-Adresse",
+          "description": "IPv4-Adresse des Geräts."
+        }
+      }
     }
   }
 }

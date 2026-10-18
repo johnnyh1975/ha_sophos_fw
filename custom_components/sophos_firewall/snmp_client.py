@@ -39,6 +39,8 @@ from .const import (
     HEALTH_COL_VALUE,
     HR_COL_PROCESSOR_LOAD,
     INTERNAL_INTERFACE_RE,
+    IF_COL_ADMIN,
+    IF_COL_OPER,
     IFX_COL_HC_IN,
     IFX_COL_HC_OUT,
     IFX_COL_NAME,
@@ -58,6 +60,20 @@ from .const import (
     OID_HA_STATUS,
     OID_HR_PROCESSOR_TABLE,
     OID_HTTP_HITS,
+    OID_AP_TABLE,
+    OID_IF_TABLE,
+    OID_POE_TABLE,
+    AP_COL_CLIENTS,
+    AP_COL_IP,
+    AP_COL_MODEL,
+    AP_COL_NAME,
+    AP_COL_STATUS,
+    AP_CONNECTED,
+    POE_COL_ENABLED,
+    POE_COL_LABEL,
+    POE_COL_LIMIT,
+    POE_COL_USAGE,
+    POE_ENABLED,
     OID_IFX_TABLE,
     OID_IMAP_HITS,
     OID_IPS_VERSION,
@@ -89,6 +105,9 @@ from .models import (
     DeviceInfo,
     HaStatus,
     InterfaceCounters,
+    InterfaceLink,
+    PoePort,
+    AccessPoint,
     License,
     SystemHealth,
     SystemStats,
@@ -180,20 +199,44 @@ def tenths_to_celsius(value: Any) -> float | None:
     return round(v / 10, 1) if v is not None and v > 0 else None
 
 
-def table_column(data: dict[str, Any], table: str, column: str) -> dict[str, Any]:
+def _ip_str(value: Any) -> str | None:
+    """An IpAddress value as dotted string (puresnmp pythonizes to IPv4Address)."""
+    v = value.pythonize() if hasattr(value, "pythonize") else value
+    if isinstance(v, bytes):
+        return ".".join(str(b) for b in v) if len(v) == 4 else None
+    return str(v) if v not in (None, "") else None
+
+
+def _milli(value: Any) -> float | None:
+    """A milli-unit Gauge32 (mW, mV, mA) in base units, one decimal."""
+    v = to_int(value)
+    return None if v is None else round(v / 1000, 1)
+
+
+def table_column(
+    data: dict[str, Any], table: str, column: str, *, compound_index: bool = False
+) -> dict[str, Any]:
     """Pick one column out of walked table rows, keyed by row index.
 
     SMI tables are laid out as ``<table>.1.<column>.<index>``. Only rows whose
     remainder after ``<table>.1.<column>.`` is a single numeric component are
     returned, so other columns, other entries and malformed OIDs are skipped
     instead of being misread (up to v1.1 the fan/PSU parser confused column
-    and row index).
+    and row index). ``compound_index`` accepts dotted indexes of any length,
+    for tables indexed by a string.
     """
     prefix = f"{table.strip('.')}.1.{column}."
     rows: dict[str, Any] = {}
     for oid, value in data.items():
         oid = str(oid).lstrip(".")
-        if oid.startswith(prefix) and (idx := oid[len(prefix):]).isdigit():
+        if not oid.startswith(prefix):
+            continue
+        idx = oid[len(prefix):]
+        if compound_index:  # a string or multi-part INDEX (e.g. the AP name)
+            valid = bool(idx) and all(part.isdigit() for part in idx.split("."))
+        else:
+            valid = idx.isdigit()
+        if valid:
             rows[idx] = value
     return rows
 
@@ -594,6 +637,86 @@ class SNMPClient:
                 in_octets=to_int(rx.get(idx)), out_octets=to_int(tx.get(idx))
             )
         return TrafficSample(sampled_at=sampled_at, counters=counters)
+
+    async def get_links(self) -> dict[str, InterfaceLink]:
+        """Return admin and operational state of every interface, keyed by ifName.
+
+        ifTable and ifXTable share the ifIndex; the name comes from ifXTable
+        as for the traffic counters.
+        """
+        names_data, status_data = await _all_or_nothing(
+            self._walk_columns(OID_IFX_TABLE, [IFX_COL_NAME]),
+            self._walk_columns(OID_IF_TABLE, [IF_COL_ADMIN, IF_COL_OPER]),
+        )
+        names = table_column(names_data, OID_IFX_TABLE, IFX_COL_NAME)
+        admin = table_column(status_data, OID_IF_TABLE, IF_COL_ADMIN)
+        oper = table_column(status_data, OID_IF_TABLE, IF_COL_OPER)
+        links: dict[str, InterfaceLink] = {}
+        for idx in sorted(names, key=int):
+            name = to_str(names[idx])
+            if name is None or INTERNAL_INTERFACE_RE.match(name) or name in links:
+                continue
+            links[name] = InterfaceLink(
+                admin_status=to_int(admin.get(idx)), oper_status=to_int(oper.get(idx))
+            )
+        return links
+
+    async def get_access_points(self) -> dict[str, AccessPoint]:
+        """Return the access points managed by the firewall, keyed by name.
+
+        Not field-tested (no appliance with Sophos APs): per SOPHOS-XG-MIB
+        sfosDeviceAPTable. The row index is the AP name encoded as a string
+        index; the name column is read instead of decoding it. A firewall
+        without access points answers an empty table.
+        """
+        data = await self._walk_columns(
+            OID_AP_TABLE, [AP_COL_NAME, AP_COL_MODEL, AP_COL_IP, AP_COL_STATUS, AP_COL_CLIENTS]
+        )
+        def column(col: str) -> dict[str, Any]:
+            return table_column(data, OID_AP_TABLE, col, compound_index=True)
+
+        names, models, ips = column(AP_COL_NAME), column(AP_COL_MODEL), column(AP_COL_IP)
+        status, clients = column(AP_COL_STATUS), column(AP_COL_CLIENTS)
+        aps: dict[str, AccessPoint] = {}
+        for idx, raw_name in names.items():
+            if (name := to_str(raw_name)) is None or name in aps:
+                continue
+            code = to_int(status.get(idx))
+            aps[name] = AccessPoint(
+                name=name,
+                model=to_str(models.get(idx)),
+                ip_address=_ip_str(ips.get(idx)),
+                connected=None if code is None else code == AP_CONNECTED,
+                clients=to_int(clients.get(idx)),
+            )
+        return aps
+
+    async def get_poe(self) -> dict[str, PoePort]:
+        """Return PoE power per port (watts), keyed by port label.
+
+        Not field-tested (no PoE model available): per SOPHOS-XG-MIB
+        sfosPoEConsumptionTable, UNITS milliwatts. The index column is
+        not-accessible, so rows are matched by their OID index.
+        """
+        data = await self._walk_columns(
+            OID_POE_TABLE, [POE_COL_LABEL, POE_COL_ENABLED, POE_COL_LIMIT, POE_COL_USAGE]
+        )
+        labels = table_column(data, OID_POE_TABLE, POE_COL_LABEL)
+        enabled = table_column(data, OID_POE_TABLE, POE_COL_ENABLED)
+        limit = table_column(data, OID_POE_TABLE, POE_COL_LIMIT)
+        usage = table_column(data, OID_POE_TABLE, POE_COL_USAGE)
+        ports: dict[str, PoePort] = {}
+        for idx in sorted(labels, key=int):
+            if (label := to_str(labels[idx])) is None or label in ports:
+                continue
+            code = to_int(enabled.get(idx))
+            ports[label] = PoePort(
+                label=label,
+                enabled=None if code is None else code == POE_ENABLED,
+                usage_w=_milli(usage.get(idx)),
+                limit_w=_milli(limit.get(idx)),
+            )
+        return ports
 
     async def get_ha_status(self) -> HaStatus:
         """Return the HA cluster state."""

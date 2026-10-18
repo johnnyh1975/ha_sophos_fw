@@ -106,10 +106,10 @@ async def test_device_info(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> No
     assert await client.get_device_info() == DeviceInfo(
         name="5HeyneXG",
         model="SFVH_KV01_SFOS",
-        firmware="SFOS 22.0.0 GA-Build411",
+        firmware="22.0.2 MR-2-Build546",
         serial="C01001D2MQT76C4",
         webcat_version="1.0.1.1207",
-        ips_version="22.1.26",
+        ips_version="18.25.61",
     )
 
 
@@ -119,8 +119,8 @@ async def test_stats(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
     assert stats == SystemStats(
         current_date="Sun Sep 27 09:00:00 2026",
         uptime_seconds=6502743,
-        disk_capacity_mb=11969, disk_percent=27,
-        memory_capacity_mb=72383, memory_percent=33,
+        disk_capacity_mb=72383, disk_percent=27,
+        memory_capacity_mb=11969, memory_percent=33,
         swap_capacity_mb=4095, swap_percent=23,
         live_users=1, http_hits=21355078, ftp_hits=0,
         smtp_hits=19, imap_hits=47, pop3_hits=12,
@@ -138,7 +138,8 @@ async def test_services(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
     services = await (await _client(hass)).get_services()
     assert len(services) == 21
     assert services["ips"] == 3
-    assert services["antispam"] == 1
+    assert services["antispam"] == 0
+    assert services["ssl_vpn"] == 7
     assert services["tomcat"] is None  # not implemented by the agent
 
 
@@ -216,7 +217,7 @@ async def test_health_ignores_foreign_columns(hass: HomeAssistant, hardware_agen
 
 async def test_ha_status(hass: HomeAssistant, snmp_agent: FakeSnmpAgent) -> None:
     assert await (await _client(hass)).get_ha_status() == HaStatus(
-        enabled=False, current_state=2, peer_state=0
+        enabled=False, current_state=0, peer_state=0
     )
 
 

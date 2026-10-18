@@ -13,7 +13,7 @@ from homeassistant.const import Platform
 
 # ── Integration identity ──────────────────────────────────────────────────────
 DOMAIN: Final = "sophos_firewall"
-PLATFORMS: Final = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SENSOR, Platform.SWITCH]
+PLATFORMS: Final = [Platform.BINARY_SENSOR, Platform.SENSOR, Platform.SWITCH]
 MANUFACTURER: Final = "Sophos"
 
 # ── Config entry ──────────────────────────────────────────────────────────────
@@ -54,6 +54,9 @@ CONF_POLL_SNMP_HEALTH    = "poll_snmp_health"
 CONF_POLL_SNMP_HA        = "poll_snmp_ha"
 CONF_POLL_SNMP_LICENSES  = "poll_snmp_licenses"
 CONF_POLL_SNMP_TRAFFIC   = "poll_snmp_traffic"
+CONF_POLL_XML_WIRELESS   = "poll_xml_wireless"
+CONF_POLL_SNMP_WIFI      = "poll_snmp_wifi"
+CONF_POLL_SNMP_POE       = "poll_snmp_poe"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_PORT           = 4444
@@ -93,6 +96,10 @@ DEFAULT_POLL_SNMP_HEALTH    = True
 DEFAULT_POLL_SNMP_HA        = False  # HA cluster — opt-in
 DEFAULT_POLL_SNMP_LICENSES  = True
 DEFAULT_POLL_SNMP_TRAFFIC   = True
+# One more XML request (5-10 s) per cycle; only useful with Sophos access points.
+DEFAULT_POLL_XML_WIRELESS   = False
+DEFAULT_POLL_SNMP_WIFI      = True   # empty tables on firewalls without access points
+DEFAULT_POLL_SNMP_POE       = True   # empty table on models without PoE
 
 
 class Tier(StrEnum):
@@ -127,6 +134,10 @@ EP_HEALTH         = "health"
 EP_HA             = "ha"
 EP_CPU            = "cpu"
 EP_TRAFFIC        = "traffic"
+EP_LINKS          = "links"
+EP_WIRELESS       = "wireless_networks"
+EP_ACCESS_POINTS  = "access_points"
+EP_POE            = "poe"
 
 # ── XML API ───────────────────────────────────────────────────────────────────
 XML_API_PATH = "/webconsole/APIController"
@@ -142,6 +153,10 @@ XML_TAG_WEB_FILTER     = "WebFilterPolicy"
 XML_TAG_DHCP_SERVER    = "DHCPServer"
 XML_TAG_BACKUP         = "BackupRestore"
 XML_TAG_ADMIN          = "AdminSettings"
+XML_TAG_URL_GROUP      = "WebFilterURLGroup"
+XML_TAG_IP_HOST        = "IPHost"
+XML_TAG_IP_HOST_GROUP  = "IPHostGroup"
+XML_TAG_WIRELESS_NETWORKS = "WirelessNetworks"
 
 # ── SNMP OIDs (Sophos MIB: enterprises.2604.5.1.x) ───────────────────────────
 _BASE = "1.3.6.1.4.1.2604.5.1"
@@ -277,6 +292,30 @@ OID_IFX_TABLE    = "1.3.6.1.2.1.31.1.1"
 IFX_COL_NAME     = "1"   # ifName
 IFX_COL_HC_IN    = "6"   # ifHCInOctets (Counter64)
 IFX_COL_HC_OUT   = "10"  # ifHCOutOctets (Counter64)
+# IF-MIB ifTable, same ifIndex as ifXTable (RFC 2863). The SFVH answers both
+# columns (field probe 2026-09-27: PortA/PortB up(1), GuestAP down(2)).
+OID_IF_TABLE     = "1.3.6.1.2.1.2.2"
+IF_COL_ADMIN     = "7"   # ifAdminStatus: up(1), down(2), testing(3)
+IF_COL_OPER      = "8"   # ifOperStatus: up(1), down(2), testing(3), unknown(4),
+                         #   dormant(5), notPresent(6), lowerLayerDown(7)
+IF_STATUS_UP     = 1
+IF_OPER_UNKNOWN  = 4
+
+# Wireless access points and PoE (SOPHOS-XG-MIB; not field-tested: no
+# appliance with Sophos access points or PoE ports was available).
+OID_AP_TABLE       = f"{_BASE}.7.1"   # sfosDeviceAPTable, INDEX sfosDeviceAPName (string)
+AP_COL_NAME        = "1"
+AP_COL_MODEL       = "2"
+AP_COL_IP          = "3"
+AP_COL_STATUS      = "5"   # APStatusType: connected(0), disconnected(1)
+AP_COL_CLIENTS     = "6"
+AP_CONNECTED       = 0
+OID_POE_TABLE      = f"{_BASE}.9.5"   # sfosPoEConsumptionTable, INDEX sfosPoEIndex
+POE_COL_LABEL      = "2"
+POE_COL_ENABLED    = "3"   # PoEPowerStatusType: enabled(1), disabled(2)
+POE_COL_LIMIT      = "4"   # milliwatts
+POE_COL_USAGE      = "5"   # milliwatts
+POE_ENABLED        = 1
 # Interfaces without traffic entities: loopback and kernel/SFOS helper
 # devices, almost all without traffic. Seen on a real SFVH (SFOS 22): dummy0,
 # ipsec0, sit0, ip6tnl0, gre0, gretap0, erspan0, ifb0 and the QoS devices

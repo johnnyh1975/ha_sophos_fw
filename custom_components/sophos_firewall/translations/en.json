@@ -69,12 +69,16 @@
             "data": {
               "interval_fast": "Interval (seconds)",
               "poll_snmp_tunnels": "IPsec VPN connections (SNMP)",
-              "poll_snmp_ha": "High-availability cluster (SNMP)"
+              "poll_snmp_ha": "High-availability cluster (SNMP)",
+              "poll_snmp_wifi": "Access points (SNMP)",
+              "poll_snmp_poe": "PoE power (SNMP)"
             },
             "data_description": {
               "interval_fast": "60–600 s.",
               "poll_snmp_tunnels": "One connectivity sensor per IPsec connection.",
-              "poll_snmp_ha": "Only useful if the firewall runs as a high-availability pair."
+              "poll_snmp_ha": "Only useful if the firewall runs as a high-availability pair.",
+              "poll_snmp_wifi": "Connection and client count of the Sophos access points the firewall manages. Not yet tested on real hardware.",
+              "poll_snmp_poe": "Power per PoE port on models with PoE. Not yet tested on real hardware."
             }
           },
           "operative": {
@@ -83,12 +87,14 @@
             "data": {
               "interval_operative": "Interval (seconds)",
               "poll_xml_fw_rules": "Firewall rules",
-              "poll_snmp_health": "Hardware health (SNMP)"
+              "poll_snmp_health": "Hardware health (SNMP)",
+              "poll_xml_wireless": "Wireless networks"
             },
             "data_description": {
               "interval_operative": "60–3600 s. A switch toggled in Home Assistant is re-read immediately.",
               "poll_xml_fw_rules": "Enabled/disabled state of every firewall rule.",
-              "poll_snmp_health": "Temperatures, fans and power supplies. Stops automatically on virtual appliances."
+              "poll_snmp_health": "Temperatures, fans and power supplies. Stops automatically on virtual appliances.",
+              "poll_xml_wireless": "On/off of the wireless networks of Sophos access points (one more XML request per cycle). Not yet tested on real hardware."
             }
           },
           "static": {
@@ -193,12 +199,16 @@
             "data": {
               "interval_fast": "Interval (seconds)",
               "poll_snmp_tunnels": "IPsec VPN connections (SNMP)",
-              "poll_snmp_ha": "High-availability cluster (SNMP)"
+              "poll_snmp_ha": "High-availability cluster (SNMP)",
+              "poll_snmp_wifi": "Access points (SNMP)",
+              "poll_snmp_poe": "PoE power (SNMP)"
             },
             "data_description": {
               "interval_fast": "60–600 s.",
               "poll_snmp_tunnels": "One connectivity sensor per IPsec connection.",
-              "poll_snmp_ha": "Only useful if the firewall runs as a high-availability pair."
+              "poll_snmp_ha": "Only useful if the firewall runs as a high-availability pair.",
+              "poll_snmp_wifi": "Connection and client count of the Sophos access points the firewall manages. Not yet tested on real hardware.",
+              "poll_snmp_poe": "Power per PoE port on models with PoE. Not yet tested on real hardware."
             }
           },
           "operative": {
@@ -207,12 +217,14 @@
             "data": {
               "interval_operative": "Interval (seconds)",
               "poll_xml_fw_rules": "Firewall rules",
-              "poll_snmp_health": "Hardware health (SNMP)"
+              "poll_snmp_health": "Hardware health (SNMP)",
+              "poll_xml_wireless": "Wireless networks"
             },
             "data_description": {
               "interval_operative": "60–3600 s. A switch toggled in Home Assistant is re-read immediately.",
               "poll_xml_fw_rules": "Enabled/disabled state of every firewall rule.",
-              "poll_snmp_health": "Temperatures, fans and power supplies. Stops automatically on virtual appliances."
+              "poll_snmp_health": "Temperatures, fans and power supplies. Stops automatically on virtual appliances.",
+              "poll_xml_wireless": "On/off of the wireless networks of Sophos access points (one more XML request per cycle). Not yet tested on real hardware."
             }
           },
           "static": {
@@ -257,6 +269,12 @@
       },
       "psu_status": {
         "name": "System · PSU {psu}"
+      },
+      "wireless_network": {
+        "name": "Wireless {name}"
+      },
+      "access_point": {
+        "name": "Access point {name}"
       }
     },
     "sensor": {
@@ -397,6 +415,12 @@
           "expired": "Expired",
           "deactivated": "Deactivated"
         }
+      },
+      "access_point_clients": {
+        "name": "Access point {name} clients"
+      },
+      "poe_power": {
+        "name": "PoE {port}"
       }
     },
     "switch": {
@@ -405,11 +429,12 @@
       },
       "web_filter_policy": {
         "name": "Web filter {name}"
-      }
-    },
-    "button": {
-      "trigger_backup": {
-        "name": "Trigger backup"
+      },
+      "wireless_network": {
+        "name": "Wireless {name}"
+      },
+      "ipsec_connection": {
+        "name": "IPsec {name}"
       }
     }
   },
@@ -426,14 +451,35 @@
     "api_access_denied": {
       "message": "The Sophos Firewall at {host} denies API access (code {code}). Enable the XML API and add this Home Assistant's IP address to the allowed addresses in the firewall's API configuration."
     },
-    "backup_failed": {
-      "message": "Failed to trigger the backup: {error}. Check the firewall's backup configuration (e.g. the mail server for email backups)."
-    },
     "write_failed": {
       "message": "Could not change {name}: {error}"
     },
     "no_data": {
       "message": "The Sophos Firewall at {host} returned no usable data: {error}"
+    },
+    "entry_not_found": {
+      "message": "No Sophos Firewall entry with the ID {entry_id}."
+    },
+    "entry_not_loaded": {
+      "message": "{title} is not loaded."
+    },
+    "write_access_disabled": {
+      "message": "{title} does not allow changes. Turn on \"Allow changes\" in the integration's options."
+    },
+    "group_not_found": {
+      "message": "{name} does not exist on the firewall. Create it there first."
+    },
+    "group_not_editable": {
+      "message": "{name} is a built-in group and cannot be changed. Create your own group."
+    },
+    "group_full": {
+      "message": "{name} is full: {error}"
+    },
+    "host_name_taken": {
+      "message": "There is already an IP host named {name} with a different address. Choose another host_name."
+    },
+    "write_not_applied": {
+      "message": "{name}: the firewall confirmed the change, but reading the group back shows it was not applied. Check the group in the web admin."
     }
   },
   "issues": {
@@ -444,6 +490,84 @@
     "snmp_unreachable": {
       "title": "{title}: SNMP agent not answering",
       "description": "The SNMP agent of the Sophos Firewall at {host} has not answered for more than 10 minutes since the integration started, so all SNMP sensors are unavailable.\n\nCheck on the firewall:\n- **Administration > SNMP**: the SNMP agent is enabled, and an SNMPv1/v2c community exists whose name matches the community configured in Home Assistant and whose IP address is the one of Home Assistant.\n- **Administration > Device access**: SNMP is allowed for the zone Home Assistant is in.\n\nIf you do not use SNMP, turn it off in the integration's options. This message disappears as soon as the agent answers."
+    }
+  },
+  "services": {
+    "block_url": {
+      "name": "Block site",
+      "description": "Adds a domain to a web filter URL group. Block the group in a web filter policy on the firewall once; the action only changes the group's list. Needs the option \"Allow changes\".",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "The Sophos Firewall entry."
+        },
+        "url_group": {
+          "name": "URL group",
+          "description": "Name of an existing URL group (not a built-in one)."
+        },
+        "url": {
+          "name": "Domain",
+          "description": "Domain name, e.g. example.com; subdomains are included. A path or scheme is dropped."
+        }
+      }
+    },
+    "unblock_url": {
+      "name": "Unblock site",
+      "description": "Removes a domain from a web filter URL group. Needs the option \"Allow changes\".",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "The Sophos Firewall entry."
+        },
+        "url_group": {
+          "name": "URL group",
+          "description": "Name of the URL group."
+        },
+        "url": {
+          "name": "Domain",
+          "description": "Domain name to remove."
+        }
+      }
+    },
+    "block_device": {
+      "name": "Block device",
+      "description": "Adds a device (IPv4 address) to an IP host group. Use the group as the source of a drop or reject rule on the firewall once; the action creates the IP host if needed and only changes the group's members. Needs the option \"Allow changes\".",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "The Sophos Firewall entry."
+        },
+        "host_group": {
+          "name": "IP host group",
+          "description": "Name of an existing IPv4 host group."
+        },
+        "ip_address": {
+          "name": "IP address",
+          "description": "IPv4 address of the device. An existing IP host with this address is reused."
+        },
+        "host_name": {
+          "name": "Host name",
+          "description": "Name for a new IP host (default: \"HA\" and the address, e.g. \"HA 192.168.1.50\"); max. 50 characters, no comma."
+        }
+      }
+    },
+    "unblock_device": {
+      "name": "Unblock device",
+      "description": "Removes a device from an IP host group. The IP host itself stays. Needs the option \"Allow changes\".",
+      "fields": {
+        "config_entry_id": {
+          "name": "Firewall",
+          "description": "The Sophos Firewall entry."
+        },
+        "host_group": {
+          "name": "IP host group",
+          "description": "Name of the IP host group."
+        },
+        "ip_address": {
+          "name": "IP address",
+          "description": "IPv4 address of the device."
+        }
+      }
     }
   }
 }

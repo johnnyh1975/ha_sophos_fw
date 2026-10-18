@@ -27,7 +27,6 @@ PLATFORM_FILES = {
     "binary_sensor": "binary_sensor.py",
     "sensor": "sensor.py",
     "switch": "switch.py",
-    "button": "button.py",
 }
 
 # Calls whose translation_key refers to strings.json "exceptions", not "entity".
@@ -140,6 +139,9 @@ VERIFIED_MDI = {
     "swap-horizontal", "vpn", "web", "web-check",
     "cpu-64-bit", "download-network-outline", "upload-network-outline",
     "tray-arrow-down", "tray-arrow-up",
+    "wifi", "wifi-off", "access-point", "access-point-network", "access-point-off", "flash",
+    # action icons (icons.json "services")
+    "web-cancel", "lan-connect", "lan-disconnect",
 }
 
 # Entities whose icon comes from their device class (temperature, power).

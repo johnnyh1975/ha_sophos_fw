@@ -36,7 +36,9 @@ from homeassistant.const import (
 )
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.typing import ConfigType
 from homeassistant.util.hass_dict import HassKey
 
 from .const import (
@@ -55,10 +57,13 @@ from .const import (
 from . import session as xml_session
 from .coordinator import SophosSnmpCoordinator, SophosXmlCoordinator
 from .issues import ISSUE_SNMP_UNREACHABLE, async_clear_all_issues, async_clear_issue
+from .services import async_setup_services
 from .snmp_client import SNMPClient
 from .sophos_client import SophosClient
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 #: Entries whose state is watched to clear their repair issues when disabled.
 _WATCHED: HassKey[set[str]] = HassKey(f"{DOMAIN}_watched_entries")
@@ -76,6 +81,12 @@ class SophosRuntimeData:
 
 
 type SophosConfigEntry = ConfigEntry[SophosRuntimeData]
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the integration's actions (block/unblock site or device)."""
+    async_setup_services(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: SophosConfigEntry) -> bool:
@@ -99,6 +110,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SophosConfigEntry) -> bo
         password=entry.data[CONF_PASSWORD],
     )
     _migrate_unique_ids(hass, entry)
+    _remove_backup_button(hass, entry)
     xml = SophosXmlCoordinator(hass, entry, client)
     try:
         await xml.async_first_refresh_of(EP_ADMIN)
@@ -198,6 +210,25 @@ async def async_migrate_entry(hass: HomeAssistant, entry: SophosConfigEntry) -> 
         )
         _LOGGER.info("Migrated %s to config entry version 2", entry.title)
     return True
+
+
+@callback
+def _remove_backup_button(hass: HomeAssistant, entry: SophosConfigEntry) -> None:
+    """Remove the "Trigger backup" button of v1.0.x/v1.1.0.
+
+    It wrote the backup schedule back with only mode and frequency: no
+    source shows that this starts a backup, the documented mandatory fields
+    (e-mail address, time) were missing, and without a readable schedule it
+    wrote frequency "Never". The XML API documents no way to start a backup
+    now, so the button is gone instead of left "unavailable".
+    """
+    registry = er.async_get(hass)
+    # Runs after _migrate_unique_ids, so the unique_id has its v2 form.
+    if entity_id := registry.async_get_entity_id(
+        "button", DOMAIN, f"{entry.entry_id}_button_backup"
+    ):
+        _LOGGER.info("Removing %s (backup trigger no longer offered)", entity_id)
+        registry.async_remove(entity_id)
 
 
 def _migrate_unique_ids(hass: HomeAssistant, entry: SophosConfigEntry) -> None:

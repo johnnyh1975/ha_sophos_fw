@@ -22,11 +22,18 @@
         "state": {
           "off": "mdi:server-network-off"
         }
-      }
-    },
-    "button": {
-      "trigger_backup": {
-        "default": "mdi:backup-restore"
+      },
+      "wireless_network": {
+        "default": "mdi:wifi",
+        "state": {
+          "off": "mdi:wifi-off"
+        }
+      },
+      "access_point": {
+        "default": "mdi:access-point-network",
+        "state": {
+          "off": "mdi:access-point-off"
+        }
       }
     },
     "sensor": {
@@ -126,6 +133,12 @@
       },
       "webcat_version": {
         "default": "mdi:web-check"
+      },
+      "access_point_clients": {
+        "default": "mdi:access-point"
+      },
+      "poe_power": {
+        "default": "mdi:flash"
       }
     },
     "switch": {
@@ -142,7 +155,30 @@
           "on": "mdi:filter-check-outline",
           "off": "mdi:filter-remove-outline"
         }
+      },
+      "wireless_network": {
+        "default": "mdi:wifi",
+        "state": {
+          "off": "mdi:wifi-off"
+        }
+      },
+      "ipsec_connection": {
+        "default": "mdi:vpn"
       }
+    }
+  },
+  "services": {
+    "block_url": {
+      "service": "mdi:web-cancel"
+    },
+    "unblock_url": {
+      "service": "mdi:web-check"
+    },
+    "block_device": {
+      "service": "mdi:lan-disconnect"
+    },
+    "unblock_device": {
+      "service": "mdi:lan-connect"
     }
   }
 }

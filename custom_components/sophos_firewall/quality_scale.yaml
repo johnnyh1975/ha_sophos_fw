@@ -1,4 +1,4 @@
-# Home Assistant integration quality scale — self-assessment for v1.1.0.
+# Home Assistant integration quality scale — self-assessment for v1.2.0.
 #
 # All 54 rules of hassfest's rule list (script/hassfest/quality_scale.py).
 # hassfest does not check this file for custom integrations, and no reviewer
@@ -8,8 +8,10 @@
 rules:
   # ── Bronze ────────────────────────────────────────────────────────────────
   action-setup:
-    status: exempt
-    comment: No service actions; control is via switch and button entities.
+    status: done
+    comment: >
+      block_url/unblock_url/block_device/unblock_device registered in
+      async_setup (services.py); they validate the config entry when called.
   appropriate-polling:
     status: done
     comment: >
@@ -40,8 +42,8 @@ rules:
       Actions job on the v2.0.1 tag (exhuma/puresnmp, pythonpackage.yml).
       The XML API client is part of this repository.
   docs-actions:
-    status: exempt
-    comment: No service actions.
+    status: done
+    comment: README "Aktionen", services.yaml and translated field descriptions.
   docs-conditions:
     status: exempt
     comment: No device conditions.
@@ -52,8 +54,8 @@ rules:
     status: exempt
     comment: No device triggers.
   entity-event-setup:
-    status: exempt
-    comment: Entities subscribe to nothing; all data comes from the coordinators.
+    status: done
+    comment: The interface sensor also listens to the SNMP coordinator; the listener is added in async_added_to_hass and removed via async_on_remove.
   entity-unique-id:
     status: done
     comment: >
@@ -78,8 +80,10 @@ rules:
   action-exceptions:
     status: done
     comment: >
-      Switch and button actions raise translated HomeAssistantError
-      (write_failed, backup_failed) for API errors and timeouts.
+      Switches and actions raise translated errors: ServiceValidationError
+      for wrong input or a missing precondition (entry not loaded, changes
+      not allowed), HomeAssistantError for API errors, timeouts, unconfirmed
+      writes, built-in or full groups.
   config-entry-unloading:
     status: done
     comment: >
@@ -100,7 +104,7 @@ rules:
       endpoint once when it starts and once when it recovers.
   parallel-updates:
     status: done
-    comment: 0 for the coordinator-fed sensors, 1 for switch and button (one write at a time).
+    comment: 0 for the coordinator-fed sensors, 1 for switches (one write at a time).
   reauthentication-flow: done
   test-coverage:
     status: done
@@ -113,8 +117,9 @@ rules:
   diagnostics:
     status: done
     comment: >
-      Endpoint states and parsed data; credentials, community, host, serial
-      number and static DHCP leases redacted.
+      Endpoint states and parsed data; credentials, community, host and
+      serial number redacted, static DHCP leases reduced to count and field
+      names.
   discovery:
     status: exempt
     comment: >
@@ -133,13 +138,13 @@ rules:
   docs-use-cases: done
   dynamic-devices:
     status: exempt
-    comment: One device per config entry (the firewall); its objects are entities, not devices.
+    comment: One device per config entry (the firewall). Its objects, access points included, are entities of that device, added and removed as they appear and disappear (DynamicFamily); access points are not modelled as devices of their own.
   entity-category:
     status: done
     comment: >
       Versions, temperatures, fans, PSUs, last boot, HA status and peer,
       backup frequency, per-service and per-license sensors → diagnostic;
-      backup button and switches → config.
+      switches → config.
   entity-device-class:
     status: done
     comment: >

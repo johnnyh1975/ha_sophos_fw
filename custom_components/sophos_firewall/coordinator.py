@@ -63,7 +63,10 @@ from .const import (
     CONF_POLL_SNMP_LICENSES,
     CONF_POLL_SNMP_SERVICES,
     CONF_POLL_SNMP_STATS,
+    CONF_POLL_SNMP_POE,
     CONF_POLL_SNMP_TRAFFIC,
+    CONF_POLL_SNMP_WIFI,
+    CONF_POLL_XML_WIRELESS,
     CONF_POLL_SNMP_TUNNELS,
     CONF_POLL_XML_BACKUP,
     CONF_POLL_XML_DHCP,
@@ -76,7 +79,10 @@ from .const import (
     DEFAULT_POLL_SNMP_LICENSES,
     DEFAULT_POLL_SNMP_SERVICES,
     DEFAULT_POLL_SNMP_STATS,
+    DEFAULT_POLL_SNMP_POE,
     DEFAULT_POLL_SNMP_TRAFFIC,
+    DEFAULT_POLL_SNMP_WIFI,
+    DEFAULT_POLL_XML_WIRELESS,
     DEFAULT_POLL_SNMP_TUNNELS,
     DEFAULT_POLL_XML_BACKUP,
     DEFAULT_POLL_XML_DHCP,
@@ -96,6 +102,10 @@ from .const import (
     EP_LICENSES,
     EP_SERVICES,
     EP_STATS,
+    EP_ACCESS_POINTS,
+    EP_LINKS,
+    EP_POE,
+    EP_WIRELESS,
     EP_TRAFFIC,
     EP_TUNNELS,
     EP_WEB_FILTER,
@@ -448,6 +458,8 @@ _XML_ENDPOINTS: tuple[Endpoint[SophosClient], ...] = (
     Endpoint(EP_BACKUP, Tier.STATIC, lambda c: c.get_backup(),
              CONF_POLL_XML_BACKUP, DEFAULT_POLL_XML_BACKUP),
     Endpoint(EP_ADMIN, Tier.STATIC, lambda c: c.get_admin_settings()),
+    Endpoint(EP_WIRELESS, Tier.OPERATIVE, lambda c: c.get_wireless_networks(),
+             CONF_POLL_XML_WIRELESS, DEFAULT_POLL_XML_WIRELESS),
 )
 
 
@@ -524,6 +536,13 @@ _SNMP_ENDPOINTS: tuple[Endpoint[SNMPClient], ...] = (
              CONF_POLL_SNMP_STATS, DEFAULT_POLL_SNMP_STATS),
     Endpoint(EP_TRAFFIC, Tier.REALTIME, lambda c: c.get_traffic(),
              CONF_POLL_SNMP_TRAFFIC, DEFAULT_POLL_SNMP_TRAFFIC),
+    # Link state of the interface entities (XML) — same option as those.
+    Endpoint(EP_LINKS, Tier.REALTIME, lambda c: c.get_links(),
+             CONF_POLL_XML_INTERFACES, DEFAULT_POLL_XML_INTERFACES),
+    Endpoint(EP_ACCESS_POINTS, Tier.FAST, lambda c: c.get_access_points(),
+             CONF_POLL_SNMP_WIFI, DEFAULT_POLL_SNMP_WIFI),
+    Endpoint(EP_POE, Tier.FAST, lambda c: c.get_poe(),
+             CONF_POLL_SNMP_POE, DEFAULT_POLL_SNMP_POE),
 )
 
 

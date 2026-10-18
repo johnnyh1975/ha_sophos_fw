@@ -7,7 +7,6 @@ from datetime import timedelta
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
-from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN, SERVICE_PRESS
 from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
 from homeassistant.const import (
     ATTR_ENTITY_ID,
@@ -26,7 +25,7 @@ from custom_components.sophos_firewall.diagnostics import async_get_config_entry
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from .conftest import make_entry, setup_entry
-from .fake_snmp import FakeSnmpAgent
+from .fake_snmp import SOPHOS, FakeSnmpAgent, Integer
 from .fake_sophos import FakeSophosApi
 
 P = "5heynexg"
@@ -86,6 +85,14 @@ async def test_dhcp_sensors(hass: HomeAssistant, xml_api: FakeSophosApi) -> None
     assert attrs["lease_count"] == 2
     assert attrs["interface"] == "PortA"
     assert attrs["leases"][0]["MACAddress"] == "aa:bb:cc:00:11:22"
+    assert attrs["leases"][1] == {
+        "HostName": "tv", "MACAddress": "aa:bb:cc:00:11:33", "IPAddress": "10.10.0.51"
+    }
+    assert (attrs["default_lease_time"], attrs["max_lease_time"]) == (1440, 2880)
+    assert "lease_range" not in attrs
+    from custom_components.sophos_firewall.sensor import SophosDHCPLeaseSensor
+
+    assert "leases" in SophosDHCPLeaseSensor._unrecorded_attributes  # MACs stay out of the DB
 
 
 async def test_web_filter_default_action_prefers_default_policy(
@@ -148,7 +155,7 @@ async def test_snmp_stats_sensors(
     expected = dt_util.utcnow() - timedelta(seconds=6502743)
     assert abs((boot - expected).total_seconds()) < 2
     assert "uptime_seconds" not in _attrs(hass, f"sensor.{P}_sensor_uptime")
-    assert _state(hass, f"sensor.{P}_sensor_ips_version") == "22.1.26"
+    assert _state(hass, f"sensor.{P}_sensor_ips_version") == "18.25.61"
     assert _state(hass, f"sensor.{P}_sensor_webcat_version") == "1.0.1.1207"
 
 
@@ -157,11 +164,11 @@ async def test_services_summary(
 ) -> None:
     await setup_entry(hass, make_entry())
     entity_id = f"sensor.{P}_sensor_services_summary"
-    assert _state(hass, entity_id) == "18"
+    assert _state(hass, entity_id) == "17"
     attrs = _attrs(hass, entity_id)
     assert "unit_of_measurement" not in attrs  # v1.0.x: "/ 21 running"
     assert attrs["total"] == 21
-    assert attrs["stopped"] == ["Anti-Spam", "HA-Service", "Tomcat"]
+    assert attrs["stopped"] == ["Anti-Spam", "HA-Service", "SSL-VPN", "Tomcat"]
     assert attrs["details"]["Tomcat"] is None
 
 
@@ -200,11 +207,25 @@ async def test_vpn_tunnels(
 async def test_ha_entities(
     hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
 ) -> None:
+    snmp_agent.set(f"{SOPHOS}.4.1.0", Integer(1))  # an HA pair: primary + auxiliary
+    snmp_agent.set(f"{SOPHOS}.4.4.0", Integer(3))
+    snmp_agent.set(f"{SOPHOS}.4.5.0", Integer(1))
+    await setup_entry(hass, make_entry(options={"poll_snmp_ha": True}))
+    assert _state(hass, f"binary_sensor.{P}_ha_enabled") == STATE_ON
+    assert _state(hass, f"sensor.{P}_ha_current_state") == "primary"
+    assert _state(hass, f"sensor.{P}_ha_peer_state") == "auxiliary"
+    assert _attrs(hass, f"sensor.{P}_ha_current_state")["state_code"] == 3
+
+
+@pytest.mark.usefixtures("entity_registry_enabled_by_default")
+async def test_ha_entities_without_a_cluster(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """A firewall without HA reports 0 for both roles (field data, SFVH)."""
     await setup_entry(hass, make_entry(options={"poll_snmp_ha": True}))
     assert _state(hass, f"binary_sensor.{P}_ha_enabled") == STATE_OFF
-    assert _state(hass, f"sensor.{P}_ha_current_state") == "standalone"
+    assert _state(hass, f"sensor.{P}_ha_current_state") == "not_applicable"
     assert _state(hass, f"sensor.{P}_ha_peer_state") == "not_applicable"
-    assert _attrs(hass, f"sensor.{P}_ha_current_state")["state_code"] == 2
 
 
 async def test_no_hardware_entities_on_virtual_appliance(
@@ -309,7 +330,8 @@ async def test_web_filter_switch_is_reread_after_write(
     before = xml_api.count("get", "WebFilterPolicy")
     await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id}, blocking=True)
     await hass.async_block_till_done()
-    assert xml_api.count("get", "WebFilterPolicy") == before + 1
+    # one read for the write (the whole policy is sent back), one re-read
+    assert xml_api.count("get", "WebFilterPolicy") == before + 2
     await _tick(hass, freezer, 30)
     assert _state(hass, entity_id) == STATE_ON
 
@@ -339,7 +361,8 @@ async def test_switch_written_during_a_running_cycle_keeps_its_new_state(
     # HA 2026.x the request debouncer then holds it for its 10 s cooldown.
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=11))
     await hass.async_block_till_done(wait_background_tasks=True)
-    assert xml_api.count("get", "FirewallRule") == 3  # setup, the cycle, the re-read
+    # setup, the cycle, the read for the write, the re-read
+    assert xml_api.count("get", "FirewallRule") == 4
     assert _state(hass, entity_id) == STATE_ON
 
 
@@ -371,36 +394,6 @@ async def test_switch_write_timeout_is_translated(
     assert err.value.translation_key == "write_failed"
 
 
-# ── Button ────────────────────────────────────────────────────────────────────
-
-
-async def test_backup_button(hass: HomeAssistant, xml_api: FakeSophosApi) -> None:
-    await setup_entry(hass, make_entry(snmp_enabled=False))
-    await hass.services.async_call(
-        BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: f"button.{P}_button_backup"}, blocking=True
-    )
-    assert xml_api.requests[-1] == ("set", "BackupRestore")
-
-
-async def test_backup_button_failure(hass: HomeAssistant, xml_api: FakeSophosApi) -> None:
-    await setup_entry(hass, make_entry(snmp_enabled=False))
-    xml_api.reject_sets.add("BackupRestore")
-    with pytest.raises(HomeAssistantError) as err:
-        await hass.services.async_call(
-            BUTTON_DOMAIN, SERVICE_PRESS, {ATTR_ENTITY_ID: f"button.{P}_button_backup"}, blocking=True
-        )
-    assert err.value.translation_key == "backup_failed"
-
-
-async def test_button_unavailable_when_firewall_unreachable(
-    hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi
-) -> None:
-    await setup_entry(hass, make_entry(snmp_enabled=False))
-    xml_api.exc = TimeoutError()
-    await _tick(hass, freezer, 30)
-    assert _state(hass, f"button.{P}_button_backup") == STATE_UNAVAILABLE
-
-
 # ── Diagnostics ───────────────────────────────────────────────────────────────
 
 
@@ -417,6 +410,10 @@ async def test_diagnostics_redacts_secrets(
     assert diag["xml"]["endpoints"]["interfaces"]["available"] is True
     assert diag["snmp"]["is_virtual"] is None  # decided after three empty health reads
     assert diag["snmp"]["data"]["stats"]["memory_percent"] == 33
+    # Leases: count and field names only, so a wrong shape (#29) is visible.
+    assert diag["xml"]["data"]["dhcp_servers"]["Main_DHCP"]["static_leases"] == {
+        "count": 2, "fields": ["HostName", "IPAddress", "MACAddress"]
+    }
 
 
 # ── Missing values are unknown, never invented ────────────────────────────────
@@ -632,7 +629,7 @@ async def test_switch_with_failed_reread_is_unavailable_not_stale(
     """If the re-read after a write fails, the old value must not come back."""
     await setup_entry(hass, make_entry(snmp_enabled=False, write_access=True))
     entity_id = f"switch.{P}_switch_webfilter_kids"
-    xml_api.broken_gets.add("WebFilterPolicy")
+    xml_api.break_gets_after_set.add("WebFilterPolicy")
     await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id}, blocking=True)
     await hass.async_block_till_done()
     assert _state(hass, entity_id) == STATE_UNAVAILABLE
@@ -900,7 +897,8 @@ async def test_service_sensors(
 ) -> None:
     await setup_entry(hass, make_entry())
     assert _state(hass, f"sensor.{P}_service_ips") == "running"
-    assert _state(hass, f"sensor.{P}_service_antispam") == "stopped"
+    assert _state(hass, f"sensor.{P}_service_antispam") == "untouched"
+    assert _state(hass, f"sensor.{P}_service_ssl_vpn") == "unregistered"
     assert _state(hass, f"sensor.{P}_service_tomcat") == "unknown"  # not implemented
     attrs = _attrs(hass, f"sensor.{P}_service_ips")
     assert attrs["friendly_name"] == "5HeyneXG Service IPS"
@@ -942,3 +940,217 @@ async def test_service_and_license_sensors_follow_their_options(
     await setup_entry(hass, entry)
     ids = [e.entity_id for e in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)]
     assert not [i for i in ids if "_service_" in i or "_license_" in i]
+
+
+# ── Interface link state (IF-MIB) ─────────────────────────────────────────────
+
+
+async def test_interface_shows_the_link_not_the_switch(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """Audit finding: InterfaceStatus is the port's on/off switch. A port
+    that is switched on but has no link must not show "connected"."""
+    from .fake_snmp import IF_ENTRY
+
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    entity_id = f"binary_sensor.{P}_iface_porta"
+    assert _state(hass, entity_id) == STATE_ON
+    assert _attrs(hass, entity_id)["oper_status"] == 1
+    snmp_agent.set(f"{IF_ENTRY}.8.6", Integer(2))  # PortA (ifIndex 6): cable out
+    snmp = entry.runtime_data.snmp
+    snmp.invalidate("links")
+    await snmp.async_refresh()
+    await hass.async_block_till_done()
+    assert _state(hass, entity_id) == STATE_OFF
+    attrs = _attrs(hass, entity_id)
+    assert attrs["enabled"] is True and attrs["link_source"] == "snmp"
+    assert attrs["oper_status"] == 2
+
+
+async def test_switched_off_interface_is_off_even_with_link(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    await setup_entry(hass, make_entry())
+    # PortB: InterfaceStatus OFF in the XML fixture, ifOperStatus up(1)
+    assert _state(hass, f"binary_sensor.{P}_iface_portb") == STATE_OFF
+
+
+async def test_interface_without_snmp_row_falls_back_to_the_switch(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """Review: an interface whose ifName does not match the XML Hardware
+    name stayed "unknown" for good although SNMP answered."""
+    from .fake_snmp import IFX_ENTRY, OctetString
+
+    snmp_agent.set(f"{IFX_ENTRY}.1.6", OctetString(b"eth0"))  # PortA under another name
+    await setup_entry(hass, make_entry())
+    entity_id = f"binary_sensor.{P}_iface_porta"
+    assert _state(hass, entity_id) == STATE_ON
+    assert _attrs(hass, entity_id)["link_source"] == "switch"
+
+
+async def test_without_snmp_the_switch_is_all_there_is(
+    hass: HomeAssistant, xml_api: FakeSophosApi
+) -> None:
+    await setup_entry(hass, make_entry(snmp_enabled=False))
+    attrs = _attrs(hass, f"binary_sensor.{P}_iface_porta")
+    assert _state(hass, f"binary_sensor.{P}_iface_porta") == STATE_ON
+    assert attrs["link_source"] == "switch" and attrs["oper_status"] is None
+
+
+# ── Wireless, access points, PoE, IPsec (built from MIB/docs, untested) ───────
+
+
+def _ap_index(name: str) -> str:
+    """String INDEX encoding (RFC 2578 7.7): length, then one sub-id per byte."""
+    return ".".join(str(n) for n in [len(name), *name.encode()])
+
+
+async def test_access_points_and_poe(
+    hass: HomeAssistant, xml_api: FakeSnmpAgent, snmp_agent: FakeSnmpAgent
+) -> None:
+    import ipaddress
+
+    from puresnmp.types import Gauge, IpAddress
+
+    from .fake_snmp import OctetString
+
+    ap = f"{SOPHOS}.7.1.1"
+    for name, status, clients, ip in (("AP-Garden", 0, 5, "10.10.0.21"), ("AP-Loft", 1, 0, "10.10.0.22")):
+        idx = _ap_index(name)
+        snmp_agent.set(f"{ap}.1.{idx}", OctetString(name.encode()))
+        snmp_agent.set(f"{ap}.2.{idx}", OctetString(b"APX 120"))
+        snmp_agent.set(f"{ap}.3.{idx}", IpAddress(ipaddress.IPv4Address(ip)))
+        snmp_agent.set(f"{ap}.5.{idx}", Integer(status))
+        snmp_agent.set(f"{ap}.6.{idx}", Integer(clients))
+    poe = f"{SOPHOS}.9.5.1"
+    snmp_agent.set(f"{poe}.2.1", OctetString(b"Port1"))
+    snmp_agent.set(f"{poe}.3.1", Integer(1))
+    snmp_agent.set(f"{poe}.4.1", Gauge(30000))
+    snmp_agent.set(f"{poe}.5.1", Gauge(6500))
+    await setup_entry(hass, make_entry())
+    assert _state(hass, f"binary_sensor.{P}_ap_ap_garden") == STATE_ON
+    assert _state(hass, f"binary_sensor.{P}_ap_ap_loft") == STATE_OFF
+    assert _attrs(hass, f"binary_sensor.{P}_ap_ap_garden")["ip_address"] == "10.10.0.21"
+    assert _state(hass, f"sensor.{P}_ap_clients_ap_garden") == "5"
+    assert _state(hass, f"sensor.{P}_poe_port1") == "6.5"
+    assert _attrs(hass, f"sensor.{P}_poe_port1")["limit_w"] == 30.0
+
+
+async def test_no_access_points_no_entities(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    await setup_entry(hass, make_entry())
+    registry = er.async_get(hass)
+    ids = [e.entity_id for e in er.async_entries_for_config_entry(registry, "sophos_test_entry")]
+    assert not [i for i in ids if "_ap_" in i or "_poe_" in i or "wlan" in i]
+
+
+_WLAN = {"Name": "Guest WiFi", "HardwareName": "wlnet1", "SSID": "Guest", "Status": "Enable"}
+
+
+async def test_wireless_network_read_only(hass: HomeAssistant, xml_api: FakeSophosApi) -> None:
+    xml_api.records["WirelessNetworks"] = [dict(_WLAN)]
+    await setup_entry(hass, make_entry(snmp_enabled=False, poll_xml_wireless=True))
+    assert _state(hass, f"binary_sensor.{P}_wlan_wlnet1") == STATE_ON
+    assert _attrs(hass, f"binary_sensor.{P}_wlan_wlnet1")["ssid"] == "Guest"
+
+
+async def test_wireless_network_switch(hass: HomeAssistant, xml_api: FakeSophosApi) -> None:
+    xml_api.records["WirelessNetworks"] = [dict(_WLAN)]
+    await setup_entry(
+        hass, make_entry(snmp_enabled=False, write_access=True, poll_xml_wireless=True)
+    )
+    entity_id = f"switch.{P}_switch_wlan_wlnet1"
+    assert _state(hass, entity_id) == STATE_ON
+    await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    await hass.async_block_till_done()
+    assert xml_api.records["WirelessNetworks"][0]["Status"] == "Disable"
+    assert ("set", "WirelessNetworkStatus") in xml_api.requests
+    assert _state(hass, entity_id) == STATE_OFF
+
+
+async def test_wireless_off_by_default(hass: HomeAssistant, xml_api: FakeSophosApi) -> None:
+    xml_api.records["WirelessNetworks"] = [dict(_WLAN)]
+    await setup_entry(hass, make_entry(snmp_enabled=False))
+    assert ("get", "WirelessNetworks") not in xml_api.requests
+
+
+async def test_ipsec_switch(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    await setup_entry(hass, make_entry(write_access=True))
+    entity_id = f"switch.{P}_switch_ipsec_1"
+    assert _state(hass, entity_id) == STATE_ON  # Azure-VPN: activated(1)
+    await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    await hass.async_block_till_done()
+    assert xml_api.ipsec_actions == [("DeActive", "Azure-VPN")]
+
+
+async def test_ipsec_switch_follows_a_renumbered_row(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """Review: the switch wrote the name it saw at creation, though its
+    state follows the SNMP row index."""
+    from .fake_snmp import VPN_ENTRY, OctetString
+
+    entry = make_entry(write_access=True)
+    await setup_entry(hass, entry)
+    snmp_agent.set(f"{VPN_ENTRY}.2.1", OctetString(b"Branch-VPN"))
+    snmp = entry.runtime_data.snmp
+    snmp.invalidate("tunnels")
+    await snmp.async_refresh()
+    await hass.async_block_till_done()
+    entity_id = f"switch.{P}_switch_ipsec_1"
+    await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    assert xml_api.ipsec_actions == [("DeActive", "Branch-VPN")]
+
+
+async def test_switching_snmp_off_removes_the_ipsec_switches(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """Review: with write access on and SNMP switched off, the IPsec
+    switches stayed as unavailable entities."""
+    entry = make_entry(write_access=True)
+    await setup_entry(hass, entry)
+    registry = er.async_get(hass)
+    assert registry.async_get(f"switch.{P}_switch_ipsec_1") is not None
+    hass.config_entries.async_update_entry(entry, options={**entry.options, "snmp_enabled": False})
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert registry.async_get(f"switch.{P}_switch_ipsec_1") is None
+    assert registry.async_get(f"switch.{P}_switch_fwrule_allow_lan_to_iot") is not None
+
+
+async def test_ipsec_switch_without_its_row_refuses_to_write(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    """No row behind the index: no connection name to send, so no request."""
+    from custom_components.sophos_firewall.models import VpnTunnel
+    from custom_components.sophos_firewall.sophos_client import SophosAPIError
+    from custom_components.sophos_firewall.switch import SophosIpsecSwitch
+
+    entry = make_entry(write_access=True)
+    await setup_entry(hass, entry)
+    runtime = entry.runtime_data
+    switch = SophosIpsecSwitch(runtime.snmp, VpnTunnel(index="9", name="Gone"), runtime.xml.client)
+    assert switch._object_name == "#9"
+    with pytest.raises(SophosAPIError):
+        await switch._write(False)
+    assert xml_api.ipsec_actions == []
+
+
+async def test_wireless_switch_write_error_names_the_network(
+    hass: HomeAssistant, xml_api: FakeSophosApi
+) -> None:
+    xml_api.records["WirelessNetworks"] = [dict(_WLAN)]
+    await setup_entry(
+        hass, make_entry(snmp_enabled=False, write_access=True, poll_xml_wireless=True)
+    )
+    xml_api.reject_sets.add("WirelessNetworkStatus")
+    with pytest.raises(HomeAssistantError) as err:
+        await hass.services.async_call(
+            SWITCH_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: f"switch.{P}_switch_wlan_wlnet1"},
+            blocking=True,
+        )
+    assert err.value.translation_placeholders["name"] == "Guest WiFi"
