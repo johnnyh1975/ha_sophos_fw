@@ -109,6 +109,7 @@ class XmlData:
     dhcp_servers: dict[str, DhcpServer] | None = None
     backup: BackupSettings | None = None
     admin: AdminSettings | None = None
+    wireless_networks: dict[str, WirelessNetwork] | None = None  # HardwareName → network
 
 
 # ── SNMP ──────────────────────────────────────────────────────────────────────
@@ -237,6 +238,27 @@ class InterfaceLink:
 
 
 @dataclass(frozen=True, slots=True)
+class AccessPoint:
+    """A wireless access point managed by the firewall (sfosDeviceAPTable)."""
+
+    name: str
+    model: str | None
+    ip_address: str | None
+    connected: bool | None
+    clients: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class PoePort:
+    """Power over Ethernet of one port (sfosPoEConsumptionTable), in watts."""
+
+    label: str
+    enabled: bool | None
+    usage_w: float | None
+    limit_w: float | None
+
+
+@dataclass(frozen=True, slots=True)
 class SnmpData:
     """Data owned by the SNMP coordinator — one field per endpoint."""
 
@@ -250,3 +272,5 @@ class SnmpData:
     cpu: dict[str, int | None] | None = None  # core number ("1", "2", …) → load %
     traffic: dict[str, InterfaceTraffic] | None = None  # ifName → counters and rates
     links: dict[str, InterfaceLink] | None = None  # ifName → link state
+    access_points: dict[str, AccessPoint] | None = None  # AP name → state
+    poe: dict[str, PoePort] | None = None  # port label → power

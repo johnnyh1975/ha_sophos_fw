@@ -18,9 +18,11 @@ from .const import (
     EP_FIREWALL_RULES,
     EP_HA,
     EP_HEALTH,
+    EP_ACCESS_POINTS,
     EP_INTERFACES,
     EP_LINKS,
     EP_TUNNELS,
+    EP_WIRELESS,
     IF_OPER_UNKNOWN,
     IF_STATUS_UP,
     VPN_ACTIVATED,
@@ -37,7 +39,15 @@ from .entity import (
     async_remove_stale_entities,
     async_setup_dynamic_entities,
 )
-from .models import FirewallRule, Interface, InterfaceLink, SnmpData, VpnTunnel
+from .models import (
+    AccessPoint,
+    FirewallRule,
+    Interface,
+    InterfaceLink,
+    SnmpData,
+    VpnTunnel,
+    WirelessNetwork,
+)
 
 PARALLEL_UPDATES = 0
 
@@ -62,12 +72,19 @@ async def async_setup_entry(
         # The switch platform owns firewall rules; drop read-only rule sensors
         # left over from before write access was enabled (configuration-driven,
         # so removing the whole family is safe).
-        async_remove_stale_entities(hass, entry, "binary_sensor", "fwrule_", (), remove_all=True)
+        for prefix in ("fwrule_", "wlan_"):
+            async_remove_stale_entities(hass, entry, "binary_sensor", prefix, (), remove_all=True)
     else:
         xml_families.append(
             DynamicFamily(
                 "fwrule_", EP_FIREWALL_RULES,
                 lambda d: _keyed("fwrule_", d.firewall_rules), SophosFirewallRuleSensor,
+            )
+        )
+        xml_families.append(
+            DynamicFamily(
+                "wlan_", EP_WIRELESS,
+                lambda d: _keyed("wlan_", d.wireless_networks), SophosWirelessNetworkSensor,
             )
         )
     async_setup_dynamic_entities(
@@ -78,7 +95,7 @@ async def async_setup_entry(
         if not entry.options.get(CONF_SNMP_ENABLED, False):
             # SNMP switched off in the options (configuration-driven, see sensor.py)
             async_remove_entities(hass, entry, "binary_sensor", ["ha_enabled"])
-            for prefix in ("vpn_", "psu_"):
+            for prefix in ("vpn_", "psu_", "ap_"):
                 async_remove_stale_entities(hass, entry, "binary_sensor", prefix, (), remove_all=True)
         return
     async_add_static_entities(
@@ -96,6 +113,13 @@ async def async_setup_entry(
             # A failed PSU may drop out of the table — its entity must stay so
             # alerts can fire, hence no stale removal for hardware.
             DynamicFamily("psu_", EP_HEALTH, _psu_items, SophosPSUSensor, remove_stale=False),
+            # Access points (untested): an empty table after a successful walk
+            # is "no access points"; removal only after three such walks.
+            DynamicFamily(
+                "ap_", EP_ACCESS_POINTS,
+                lambda d: _keyed("ap_", d.access_points), SophosAccessPointSensor,
+                trust_empty=True, confirm_missing=True,
+            ),
         ],
     )
 
@@ -299,3 +323,54 @@ class SophosPSUSensor(SophosSnmpEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         return self.snmp.health.psus.get(self._key) if self.snmp.health else None
+
+
+class SophosWirelessNetworkSensor(SophosXmlEntity, BinarySensorEntity):
+    """Wireless network on/off, read-only (without write access; untested)."""
+
+    _attr_translation_key = "wireless_network"
+
+    def __init__(self, coordinator: SophosXmlCoordinator, network: WirelessNetwork) -> None:
+        super().__init__(coordinator, f"wlan_{network.hardware_name}", EP_WIRELESS)
+        self._hardware = network.hardware_name
+        self._attr_translation_placeholders = {"name": network.name}
+
+    def _network(self) -> WirelessNetwork | None:
+        return (self.xml.wireless_networks or {}).get(self._hardware)
+
+    @property
+    def is_on(self) -> bool | None:
+        network = self._network()
+        return network.enabled if network else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        network = self._network()
+        return {} if network is None else {"ssid": network.ssid, "interface": self._hardware}
+
+
+class SophosAccessPointSensor(SophosSnmpEntity, BinarySensorEntity):
+    """Access point connected to the firewall (sfosDeviceAPStatus; untested)."""
+
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_translation_key = "access_point"
+
+    def __init__(self, coordinator: SophosSnmpCoordinator, ap: AccessPoint) -> None:
+        super().__init__(coordinator, f"ap_{ap.name}", EP_ACCESS_POINTS)
+        self._name = ap.name
+        self._attr_translation_placeholders = {"name": ap.name}
+
+    def _ap(self) -> AccessPoint | None:
+        return (self.snmp.access_points or {}).get(self._name)
+
+    @property
+    def is_on(self) -> bool | None:
+        ap = self._ap()
+        return ap.connected if ap else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        ap = self._ap()
+        if ap is None:
+            return {}
+        return {"model": ap.model, "ip_address": ap.ip_address, "clients": ap.clients}

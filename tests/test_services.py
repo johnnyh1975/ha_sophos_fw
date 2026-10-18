@@ -198,3 +198,20 @@ async def test_full_group_is_reported(hass: HomeAssistant, xml_api: FakeSophosAp
     with pytest.raises(HomeAssistantError) as err:
         await _call(hass, "block_url", url_group="HA Blocked Sites", url="a.example")
     assert err.value.translation_key == "group_full"
+
+
+@pytest.mark.usefixtures("writable")
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"ip_address": "not-an-ip"},
+        {"ip_address": "fe80::1"},
+        {"ip_address": "10.0.0.1", "host_name": "#bad"},
+        {"ip_address": "10.0.0.1", "host_name": "a,b"},
+    ],
+)
+async def test_invalid_device_input(hass: HomeAssistant, data: dict[str, str]) -> None:
+    import voluptuous as vol
+
+    with pytest.raises(vol.Invalid):
+        await _call(hass, "block_device", host_group="Empty Devices", **data)

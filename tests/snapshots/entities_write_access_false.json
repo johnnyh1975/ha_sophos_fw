@@ -258,7 +258,7 @@
     "state_class": "measurement",
     "translation_key": "cpu_temperature",
     "unique_id": "sophos_test_entry_sensor_cpu_temperature",
-    "unit": "°C"
+    "unit": "\u00b0C"
   },
   "sensor.5heynexg_sensor_cpu_usage": {
     "device_class": null,
@@ -375,7 +375,7 @@
     "state_class": "measurement",
     "translation_key": "npu_temperature",
     "unique_id": "sophos_test_entry_sensor_npu_temperature",
-    "unit": "°C"
+    "unit": "\u00b0C"
   },
   "sensor.5heynexg_sensor_pop3_hits": {
     "device_class": null,

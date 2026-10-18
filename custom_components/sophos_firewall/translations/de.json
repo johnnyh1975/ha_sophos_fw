@@ -69,12 +69,16 @@
             "data": {
               "interval_fast": "Intervall (Sekunden)",
               "poll_snmp_tunnels": "IPsec-VPN-Verbindungen (SNMP)",
-              "poll_snmp_ha": "Hochverfügbarkeits-Cluster (SNMP)"
+              "poll_snmp_ha": "Hochverfügbarkeits-Cluster (SNMP)",
+              "poll_snmp_wifi": "Access Points (SNMP)",
+              "poll_snmp_poe": "PoE-Leistung (SNMP)"
             },
             "data_description": {
               "interval_fast": "60–600 s.",
               "poll_snmp_tunnels": "Ein Verbindungssensor pro IPsec-Verbindung.",
-              "poll_snmp_ha": "Nur sinnvoll, wenn die Firewall als Hochverfügbarkeits-Paar läuft."
+              "poll_snmp_ha": "Nur sinnvoll, wenn die Firewall als Hochverfügbarkeits-Paar läuft.",
+              "poll_snmp_wifi": "Verbindung und Anzahl der Clients der Sophos-Access-Points, die die Firewall verwaltet. An echter Hardware noch nicht getestet.",
+              "poll_snmp_poe": "Leistung pro PoE-Port bei Modellen mit PoE. An echter Hardware noch nicht getestet."
             }
           },
           "operative": {
@@ -83,12 +87,14 @@
             "data": {
               "interval_operative": "Intervall (Sekunden)",
               "poll_xml_fw_rules": "Firewall-Regeln",
-              "poll_snmp_health": "Hardware-Zustand (SNMP)"
+              "poll_snmp_health": "Hardware-Zustand (SNMP)",
+              "poll_xml_wireless": "WLAN-Netze"
             },
             "data_description": {
               "interval_operative": "60–3600 s. Ein in Home Assistant umgeschalteter Schalter wird sofort neu gelesen.",
               "poll_xml_fw_rules": "Aktiv/Inaktiv-Status jeder Firewall-Regel.",
-              "poll_snmp_health": "Temperaturen, Lüfter und Netzteile. Stoppt auf virtuellen Appliances automatisch."
+              "poll_snmp_health": "Temperaturen, Lüfter und Netzteile. Stoppt auf virtuellen Appliances automatisch.",
+              "poll_xml_wireless": "Ein/Aus der WLAN-Netze von Sophos-Access-Points (eine XML-Anfrage mehr pro Durchlauf). An echter Hardware noch nicht getestet."
             }
           },
           "static": {
@@ -193,12 +199,16 @@
             "data": {
               "interval_fast": "Intervall (Sekunden)",
               "poll_snmp_tunnels": "IPsec-VPN-Verbindungen (SNMP)",
-              "poll_snmp_ha": "Hochverfügbarkeits-Cluster (SNMP)"
+              "poll_snmp_ha": "Hochverfügbarkeits-Cluster (SNMP)",
+              "poll_snmp_wifi": "Access Points (SNMP)",
+              "poll_snmp_poe": "PoE-Leistung (SNMP)"
             },
             "data_description": {
               "interval_fast": "60–600 s.",
               "poll_snmp_tunnels": "Ein Verbindungssensor pro IPsec-Verbindung.",
-              "poll_snmp_ha": "Nur sinnvoll, wenn die Firewall als Hochverfügbarkeits-Paar läuft."
+              "poll_snmp_ha": "Nur sinnvoll, wenn die Firewall als Hochverfügbarkeits-Paar läuft.",
+              "poll_snmp_wifi": "Verbindung und Anzahl der Clients der Sophos-Access-Points, die die Firewall verwaltet. An echter Hardware noch nicht getestet.",
+              "poll_snmp_poe": "Leistung pro PoE-Port bei Modellen mit PoE. An echter Hardware noch nicht getestet."
             }
           },
           "operative": {
@@ -207,12 +217,14 @@
             "data": {
               "interval_operative": "Intervall (Sekunden)",
               "poll_xml_fw_rules": "Firewall-Regeln",
-              "poll_snmp_health": "Hardware-Zustand (SNMP)"
+              "poll_snmp_health": "Hardware-Zustand (SNMP)",
+              "poll_xml_wireless": "WLAN-Netze"
             },
             "data_description": {
               "interval_operative": "60–3600 s. Ein in Home Assistant umgeschalteter Schalter wird sofort neu gelesen.",
               "poll_xml_fw_rules": "Aktiv/Inaktiv-Status jeder Firewall-Regel.",
-              "poll_snmp_health": "Temperaturen, Lüfter und Netzteile. Stoppt auf virtuellen Appliances automatisch."
+              "poll_snmp_health": "Temperaturen, Lüfter und Netzteile. Stoppt auf virtuellen Appliances automatisch.",
+              "poll_xml_wireless": "Ein/Aus der WLAN-Netze von Sophos-Access-Points (eine XML-Anfrage mehr pro Durchlauf). An echter Hardware noch nicht getestet."
             }
           },
           "static": {
@@ -257,6 +269,12 @@
       },
       "psu_status": {
         "name": "System · Netzteil {psu}"
+      },
+      "wireless_network": {
+        "name": "Netz · WLAN {name}"
+      },
+      "access_point": {
+        "name": "Netz · Access Point {name}"
       }
     },
     "sensor": {
@@ -397,6 +415,12 @@
           "expired": "Abgelaufen",
           "deactivated": "Deaktiviert"
         }
+      },
+      "access_point_clients": {
+        "name": "Netz · Access Point {name} Clients"
+      },
+      "poe_power": {
+        "name": "System · PoE {port}"
       }
     },
     "switch": {
@@ -405,6 +429,12 @@
       },
       "web_filter_policy": {
         "name": "Web-Filter {name}"
+      },
+      "wireless_network": {
+        "name": "WLAN {name}"
+      },
+      "ipsec_connection": {
+        "name": "IPsec {name}"
       }
     }
   },

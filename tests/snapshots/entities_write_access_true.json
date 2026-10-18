@@ -240,7 +240,7 @@
     "state_class": "measurement",
     "translation_key": "cpu_temperature",
     "unique_id": "sophos_test_entry_sensor_cpu_temperature",
-    "unit": "°C"
+    "unit": "\u00b0C"
   },
   "sensor.5heynexg_sensor_cpu_usage": {
     "device_class": null,
@@ -357,7 +357,7 @@
     "state_class": "measurement",
     "translation_key": "npu_temperature",
     "unique_id": "sophos_test_entry_sensor_npu_temperature",
-    "unit": "°C"
+    "unit": "\u00b0C"
   },
   "sensor.5heynexg_sensor_pop3_hits": {
     "device_class": null,
@@ -843,6 +843,33 @@
     "state_class": null,
     "translation_key": "firewall_rule",
     "unique_id": "sophos_test_entry_switch_fwrule_Block Guest",
+    "unit": null
+  },
+  "switch.5heynexg_switch_ipsec_1": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": "config",
+    "state_class": null,
+    "translation_key": "ipsec_connection",
+    "unique_id": "sophos_test_entry_switch_ipsec_1",
+    "unit": null
+  },
+  "switch.5heynexg_switch_ipsec_2": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": "config",
+    "state_class": null,
+    "translation_key": "ipsec_connection",
+    "unique_id": "sophos_test_entry_switch_ipsec_2",
+    "unit": null
+  },
+  "switch.5heynexg_switch_ipsec_3": {
+    "device_class": null,
+    "disabled_by_default": false,
+    "entity_category": "config",
+    "state_class": null,
+    "translation_key": "ipsec_connection",
+    "unique_id": "sophos_test_entry_switch_ipsec_3",
     "unit": null
   },
   "switch.5heynexg_switch_webfilter_default_policy": {

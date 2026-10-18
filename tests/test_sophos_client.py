@@ -520,3 +520,25 @@ async def test_no_request_between_the_read_and_the_write(
     assert xml_api.requests[-3:] == [
         ("get", "FirewallRule"), ("set", "FirewallRule"), ("get", "Interface")
     ]
+
+
+async def test_wireless_status_with_unknown_interface(
+    client: SophosClient, xml_api: FakeSophosApi
+) -> None:
+    """The display name instead of the HardwareName answers 526 (third-party
+    module notes); it must surface as an error with that code."""
+    from custom_components.sophos_firewall.sophos_client import SophosWriteError
+
+    xml_api.records["WirelessNetworks"] = [
+        {"Name": "Guest WiFi", "HardwareName": "wlnet1", "Status": "Enable"}
+    ]
+    with pytest.raises(SophosWriteError) as err:
+        await client.set_wireless_network_status("Guest WiFi", False)
+    assert err.value.code == "526"
+    await client.set_wireless_network_status("wlnet1", False)
+    assert xml_api.records["WirelessNetworks"][0]["Status"] == "Disable"
+
+
+async def test_ipsec_activate(client: SophosClient, xml_api: FakeSophosApi) -> None:
+    await client.set_ipsec_connection_active("Azure_VPN", True)
+    assert xml_api.ipsec_actions == [("Active", "Azure_VPN")]

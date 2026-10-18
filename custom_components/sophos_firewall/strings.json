@@ -69,12 +69,16 @@
             "data": {
               "interval_fast": "Interval (seconds)",
               "poll_snmp_tunnels": "IPsec VPN connections (SNMP)",
-              "poll_snmp_ha": "High-availability cluster (SNMP)"
+              "poll_snmp_ha": "High-availability cluster (SNMP)",
+              "poll_snmp_wifi": "Access points (SNMP)",
+              "poll_snmp_poe": "PoE power (SNMP)"
             },
             "data_description": {
               "interval_fast": "60–600 s.",
               "poll_snmp_tunnels": "One connectivity sensor per IPsec connection.",
-              "poll_snmp_ha": "Only useful if the firewall runs as a high-availability pair."
+              "poll_snmp_ha": "Only useful if the firewall runs as a high-availability pair.",
+              "poll_snmp_wifi": "Connection and client count of the Sophos access points the firewall manages. Not yet tested on real hardware.",
+              "poll_snmp_poe": "Power per PoE port on models with PoE. Not yet tested on real hardware."
             }
           },
           "operative": {
@@ -83,12 +87,14 @@
             "data": {
               "interval_operative": "Interval (seconds)",
               "poll_xml_fw_rules": "Firewall rules",
-              "poll_snmp_health": "Hardware health (SNMP)"
+              "poll_snmp_health": "Hardware health (SNMP)",
+              "poll_xml_wireless": "Wireless networks"
             },
             "data_description": {
               "interval_operative": "60–3600 s. A switch toggled in Home Assistant is re-read immediately.",
               "poll_xml_fw_rules": "Enabled/disabled state of every firewall rule.",
-              "poll_snmp_health": "Temperatures, fans and power supplies. Stops automatically on virtual appliances."
+              "poll_snmp_health": "Temperatures, fans and power supplies. Stops automatically on virtual appliances.",
+              "poll_xml_wireless": "On/off of the wireless networks of Sophos access points (one more XML request per cycle). Not yet tested on real hardware."
             }
           },
           "static": {
@@ -193,12 +199,16 @@
             "data": {
               "interval_fast": "Interval (seconds)",
               "poll_snmp_tunnels": "IPsec VPN connections (SNMP)",
-              "poll_snmp_ha": "High-availability cluster (SNMP)"
+              "poll_snmp_ha": "High-availability cluster (SNMP)",
+              "poll_snmp_wifi": "Access points (SNMP)",
+              "poll_snmp_poe": "PoE power (SNMP)"
             },
             "data_description": {
               "interval_fast": "60–600 s.",
               "poll_snmp_tunnels": "One connectivity sensor per IPsec connection.",
-              "poll_snmp_ha": "Only useful if the firewall runs as a high-availability pair."
+              "poll_snmp_ha": "Only useful if the firewall runs as a high-availability pair.",
+              "poll_snmp_wifi": "Connection and client count of the Sophos access points the firewall manages. Not yet tested on real hardware.",
+              "poll_snmp_poe": "Power per PoE port on models with PoE. Not yet tested on real hardware."
             }
           },
           "operative": {
@@ -207,12 +217,14 @@
             "data": {
               "interval_operative": "Interval (seconds)",
               "poll_xml_fw_rules": "Firewall rules",
-              "poll_snmp_health": "Hardware health (SNMP)"
+              "poll_snmp_health": "Hardware health (SNMP)",
+              "poll_xml_wireless": "Wireless networks"
             },
             "data_description": {
               "interval_operative": "60–3600 s. A switch toggled in Home Assistant is re-read immediately.",
               "poll_xml_fw_rules": "Enabled/disabled state of every firewall rule.",
-              "poll_snmp_health": "Temperatures, fans and power supplies. Stops automatically on virtual appliances."
+              "poll_snmp_health": "Temperatures, fans and power supplies. Stops automatically on virtual appliances.",
+              "poll_xml_wireless": "On/off of the wireless networks of Sophos access points (one more XML request per cycle). Not yet tested on real hardware."
             }
           },
           "static": {
@@ -257,6 +269,12 @@
       },
       "psu_status": {
         "name": "System · PSU {psu}"
+      },
+      "wireless_network": {
+        "name": "Wireless {name}"
+      },
+      "access_point": {
+        "name": "Access point {name}"
       }
     },
     "sensor": {
@@ -397,6 +415,12 @@
           "expired": "Expired",
           "deactivated": "Deactivated"
         }
+      },
+      "access_point_clients": {
+        "name": "Access point {name} clients"
+      },
+      "poe_power": {
+        "name": "PoE {port}"
       }
     },
     "switch": {
@@ -405,6 +429,12 @@
       },
       "web_filter_policy": {
         "name": "Web filter {name}"
+      },
+      "wireless_network": {
+        "name": "Wireless {name}"
+      },
+      "ipsec_connection": {
+        "name": "IPsec {name}"
       }
     }
   },

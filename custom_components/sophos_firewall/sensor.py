@@ -18,6 +18,7 @@ from homeassistant.const import (
     PERCENTAGE,
     EntityCategory,
     UnitOfDataRate,
+    UnitOfPower,
     UnitOfInformation,
     UnitOfTemperature,
 )
@@ -30,6 +31,7 @@ from . import SophosConfigEntry
 from .const import (
     CONF_SNMP_ENABLED,
     EP_BACKUP,
+    EP_ACCESS_POINTS,
     EP_CPU,
     EP_DEVICE,
     EP_DHCP_SERVERS,
@@ -37,6 +39,7 @@ from .const import (
     EP_HEALTH,
     EP_INTERFACES,
     EP_LICENSES,
+    EP_POE,
     EP_SERVICES,
     EP_STATS,
     EP_TRAFFIC,
@@ -58,7 +61,15 @@ from .entity import (
     async_remove_stale_entities,
     async_setup_dynamic_entities,
 )
-from .models import DhcpServer, InterfaceTraffic, License, SnmpData, XmlData
+from .models import (
+    AccessPoint,
+    DhcpServer,
+    InterfaceTraffic,
+    License,
+    PoePort,
+    SnmpData,
+    XmlData,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -363,6 +374,19 @@ async def async_setup_entry(
         hass, entry, snmp, "sensor", async_add_entities,
         [
             DynamicFamily("sensor_cpu_usage", EP_CPU, _cpu_usage_items, SophosCpuUsageSensor),
+            # Access points and PoE (untested): entities only for rows the
+            # agent reports; removed after three walks without them.
+            DynamicFamily(
+                "ap_clients_", EP_ACCESS_POINTS,
+                lambda d: None if d.access_points is None
+                else {f"ap_clients_{n}": ap for n, ap in d.access_points.items()},
+                SophosAccessPointClientsSensor, trust_empty=True, confirm_missing=True,
+            ),
+            DynamicFamily(
+                "poe_", EP_POE,
+                lambda d: None if d.poe is None else {f"poe_{n}": port for n, port in d.poe.items()},
+                SophosPoeSensor, trust_empty=True, confirm_missing=True,
+            ),
             DynamicFamily(
                 "sensor_cpu_core_", EP_CPU, _cpu_core_items, SophosCpuCoreSensor,
                 confirm_missing=True,
@@ -420,7 +444,10 @@ def _async_remove_snmp_entities(hass: HomeAssistant, entry: SophosConfigEntry) -
             "ha_current_state", "ha_peer_state", "sensor_cpu_usage",
         ],
     )
-    for prefix in ("service_", "license_", "sensor_cpu_core_", "traffic_", "sensor_fan_"):
+    for prefix in (
+        "service_", "license_", "sensor_cpu_core_", "traffic_", "sensor_fan_",
+        "ap_clients_", "poe_",
+    ):
         async_remove_stale_entities(hass, entry, "sensor", prefix, (), remove_all=True)
 
 
@@ -887,3 +914,48 @@ class SophosLicenseSensor(SophosSnmpEntity, SensorEntity):
             "status_code": lic.status_code if lic else None,
             "expiry_date": expiry.date().isoformat() if expiry else None,
         }
+
+
+class SophosAccessPointClientsSensor(SophosSnmpEntity, SensorEntity):
+    """Clients connected to an access point (sfosDeviceAPClientCount; untested)."""
+
+    _attr_translation_key = "access_point_clients"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: SophosSnmpCoordinator, ap: AccessPoint) -> None:
+        super().__init__(coordinator, f"ap_clients_{ap.name}", EP_ACCESS_POINTS)
+        self._name = ap.name
+        self._attr_translation_placeholders = {"name": ap.name}
+
+    @property
+    def native_value(self) -> int | None:
+        ap = (self.snmp.access_points or {}).get(self._name)
+        return ap.clients if ap else None
+
+
+class SophosPoeSensor(SophosSnmpEntity, SensorEntity):
+    """Power drawn on a PoE port (sfosPoEPowerUsage, mW → W; untested)."""
+
+    _attr_translation_key = "poe_power"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator: SophosSnmpCoordinator, port: PoePort) -> None:
+        super().__init__(coordinator, f"poe_{port.label}", EP_POE)
+        self._label = port.label
+        self._attr_translation_placeholders = {"port": port.label}
+
+    def _port(self) -> PoePort | None:
+        return (self.snmp.poe or {}).get(self._label)
+
+    @property
+    def native_value(self) -> float | None:
+        port = self._port()
+        return port.usage_w if port else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        port = self._port()
+        return {} if port is None else {"enabled": port.enabled, "limit_w": port.limit_w}

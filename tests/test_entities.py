@@ -983,3 +983,92 @@ async def test_without_snmp_the_switch_is_all_there_is(
     attrs = _attrs(hass, f"binary_sensor.{P}_iface_porta")
     assert _state(hass, f"binary_sensor.{P}_iface_porta") == STATE_ON
     assert attrs["link_source"] == "switch" and attrs["oper_status"] is None
+
+
+# ── Wireless, access points, PoE, IPsec (built from MIB/docs, untested) ───────
+
+
+def _ap_index(name: str) -> str:
+    """String INDEX encoding (RFC 2578 7.7): length, then one sub-id per byte."""
+    return ".".join(str(n) for n in [len(name), *name.encode()])
+
+
+async def test_access_points_and_poe(
+    hass: HomeAssistant, xml_api: FakeSnmpAgent, snmp_agent: FakeSnmpAgent
+) -> None:
+    import ipaddress
+
+    from puresnmp.types import Gauge, IpAddress
+
+    from .fake_snmp import OctetString
+
+    ap = f"{SOPHOS}.7.1.1"
+    for name, status, clients, ip in (("AP-Garden", 0, 5, "10.10.0.21"), ("AP-Loft", 1, 0, "10.10.0.22")):
+        idx = _ap_index(name)
+        snmp_agent.set(f"{ap}.1.{idx}", OctetString(name.encode()))
+        snmp_agent.set(f"{ap}.2.{idx}", OctetString(b"APX 120"))
+        snmp_agent.set(f"{ap}.3.{idx}", IpAddress(ipaddress.IPv4Address(ip)))
+        snmp_agent.set(f"{ap}.5.{idx}", Integer(status))
+        snmp_agent.set(f"{ap}.6.{idx}", Integer(clients))
+    poe = f"{SOPHOS}.9.5.1"
+    snmp_agent.set(f"{poe}.2.1", OctetString(b"Port1"))
+    snmp_agent.set(f"{poe}.3.1", Integer(1))
+    snmp_agent.set(f"{poe}.4.1", Gauge(30000))
+    snmp_agent.set(f"{poe}.5.1", Gauge(6500))
+    await setup_entry(hass, make_entry())
+    assert _state(hass, f"binary_sensor.{P}_ap_ap_garden") == STATE_ON
+    assert _state(hass, f"binary_sensor.{P}_ap_ap_loft") == STATE_OFF
+    assert _attrs(hass, f"binary_sensor.{P}_ap_ap_garden")["ip_address"] == "10.10.0.21"
+    assert _state(hass, f"sensor.{P}_ap_clients_ap_garden") == "5"
+    assert _state(hass, f"sensor.{P}_poe_port1") == "6.5"
+    assert _attrs(hass, f"sensor.{P}_poe_port1")["limit_w"] == 30.0
+
+
+async def test_no_access_points_no_entities(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    await setup_entry(hass, make_entry())
+    registry = er.async_get(hass)
+    ids = [e.entity_id for e in er.async_entries_for_config_entry(registry, "sophos_test_entry")]
+    assert not [i for i in ids if "_ap_" in i or "_poe_" in i or "wlan" in i]
+
+
+_WLAN = {"Name": "Guest WiFi", "HardwareName": "wlnet1", "SSID": "Guest", "Status": "Enable"}
+
+
+async def test_wireless_network_read_only(hass: HomeAssistant, xml_api: FakeSophosApi) -> None:
+    xml_api.records["WirelessNetworks"] = [dict(_WLAN)]
+    await setup_entry(hass, make_entry(snmp_enabled=False, poll_xml_wireless=True))
+    assert _state(hass, f"binary_sensor.{P}_wlan_wlnet1") == STATE_ON
+    assert _attrs(hass, f"binary_sensor.{P}_wlan_wlnet1")["ssid"] == "Guest"
+
+
+async def test_wireless_network_switch(hass: HomeAssistant, xml_api: FakeSophosApi) -> None:
+    xml_api.records["WirelessNetworks"] = [dict(_WLAN)]
+    await setup_entry(
+        hass, make_entry(snmp_enabled=False, write_access=True, poll_xml_wireless=True)
+    )
+    entity_id = f"switch.{P}_switch_wlan_wlnet1"
+    assert _state(hass, entity_id) == STATE_ON
+    await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    await hass.async_block_till_done()
+    assert xml_api.records["WirelessNetworks"][0]["Status"] == "Disable"
+    assert ("set", "WirelessNetworkStatus") in xml_api.requests
+    assert _state(hass, entity_id) == STATE_OFF
+
+
+async def test_wireless_off_by_default(hass: HomeAssistant, xml_api: FakeSophosApi) -> None:
+    xml_api.records["WirelessNetworks"] = [dict(_WLAN)]
+    await setup_entry(hass, make_entry(snmp_enabled=False))
+    assert ("get", "WirelessNetworks") not in xml_api.requests
+
+
+async def test_ipsec_switch(
+    hass: HomeAssistant, xml_api: FakeSophosApi, snmp_agent: FakeSnmpAgent
+) -> None:
+    await setup_entry(hass, make_entry(write_access=True))
+    entity_id = f"switch.{P}_switch_ipsec_1"
+    assert _state(hass, entity_id) == STATE_ON  # Azure-VPN: activated(1)
+    await hass.services.async_call(SWITCH_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    await hass.async_block_till_done()
+    assert xml_api.ipsec_actions == [("DeActive", "Azure-VPN")]

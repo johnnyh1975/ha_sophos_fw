@@ -54,6 +54,9 @@ CONF_POLL_SNMP_HEALTH    = "poll_snmp_health"
 CONF_POLL_SNMP_HA        = "poll_snmp_ha"
 CONF_POLL_SNMP_LICENSES  = "poll_snmp_licenses"
 CONF_POLL_SNMP_TRAFFIC   = "poll_snmp_traffic"
+CONF_POLL_XML_WIRELESS   = "poll_xml_wireless"
+CONF_POLL_SNMP_WIFI      = "poll_snmp_wifi"
+CONF_POLL_SNMP_POE       = "poll_snmp_poe"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_PORT           = 4444
@@ -93,6 +96,10 @@ DEFAULT_POLL_SNMP_HEALTH    = True
 DEFAULT_POLL_SNMP_HA        = False  # HA cluster — opt-in
 DEFAULT_POLL_SNMP_LICENSES  = True
 DEFAULT_POLL_SNMP_TRAFFIC   = True
+# One more XML request (5-10 s) per cycle; only useful with Sophos access points.
+DEFAULT_POLL_XML_WIRELESS   = False
+DEFAULT_POLL_SNMP_WIFI      = True   # empty tables on firewalls without access points
+DEFAULT_POLL_SNMP_POE       = True   # empty table on models without PoE
 
 
 class Tier(StrEnum):
@@ -128,6 +135,9 @@ EP_HA             = "ha"
 EP_CPU            = "cpu"
 EP_TRAFFIC        = "traffic"
 EP_LINKS          = "links"
+EP_WIRELESS       = "wireless_networks"
+EP_ACCESS_POINTS  = "access_points"
+EP_POE            = "poe"
 
 # ── XML API ───────────────────────────────────────────────────────────────────
 XML_API_PATH = "/webconsole/APIController"
@@ -290,6 +300,22 @@ IF_COL_OPER      = "8"   # ifOperStatus: up(1), down(2), testing(3), unknown(4),
                          #   dormant(5), notPresent(6), lowerLayerDown(7)
 IF_STATUS_UP     = 1
 IF_OPER_UNKNOWN  = 4
+
+# Wireless access points and PoE (SOPHOS-XG-MIB; not field-tested: no
+# appliance with Sophos access points or PoE ports was available).
+OID_AP_TABLE       = f"{_BASE}.7.1"   # sfosDeviceAPTable, INDEX sfosDeviceAPName (string)
+AP_COL_NAME        = "1"
+AP_COL_MODEL       = "2"
+AP_COL_IP          = "3"
+AP_COL_STATUS      = "5"   # APStatusType: connected(0), disconnected(1)
+AP_COL_CLIENTS     = "6"
+AP_CONNECTED       = 0
+OID_POE_TABLE      = f"{_BASE}.9.5"   # sfosPoEConsumptionTable, INDEX sfosPoEIndex
+POE_COL_LABEL      = "2"
+POE_COL_ENABLED    = "3"   # PoEPowerStatusType: enabled(1), disabled(2)
+POE_COL_LIMIT      = "4"   # milliwatts
+POE_COL_USAGE      = "5"   # milliwatts
+POE_ENABLED        = 1
 # Interfaces without traffic entities: loopback and kernel/SFOS helper
 # devices, almost all without traffic. Seen on a real SFVH (SFOS 22): dummy0,
 # ipsec0, sit0, ip6tnl0, gre0, gretap0, erspan0, ifb0 and the QoS devices
