@@ -547,7 +547,7 @@
         },
         "host_name": {
           "name": "Hostname",
-          "description": "Name für einen neuen IP-Host (Standard „HA <Adresse>“); höchstens 50 Zeichen, kein Komma."
+          "description": "Name für einen neuen IP-Host (Standard: „HA“ und die Adresse, z. B. „HA 192.168.1.50“); höchstens 50 Zeichen, kein Komma."
         }
       }
     },

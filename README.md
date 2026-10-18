@@ -258,7 +258,7 @@ Zwei Paare von Aktionen ändern Gruppen auf der Firewall. Regeln legen sie nicht
 **Gerät sperren** (`sophos_firewall.block_device` / `unblock_device`)
 1. Auf der Firewall unter *Hosts and services → IP host group* eine IPv4-Gruppe anlegen, z. B. „HA Blocked Devices“.
 2. Eine Firewall-Regel mit dieser Gruppe als Quelle und der Aktion „Drop“ oder „Reject“ anlegen, oben in der Regelliste.
-3. `block_device` nimmt das Gerät per IPv4-Adresse in die Gruppe auf. Gibt es schon einen IP-Host mit dieser Adresse, wird er verwendet; sonst legt die Aktion einen an (Name „HA <Adresse>“ oder `host_name`). Die Antwort nennt den verwendeten Host (`host`). Ist `host_name` schon an einen Host mit anderer Adresse vergeben, bricht die Aktion mit einer Meldung ab. `unblock_device` nimmt jeden IP-Host mit dieser Adresse aus der Gruppe (Antwort `hosts`); die IP-Hosts selbst bleiben bestehen.
+3. `block_device` nimmt das Gerät per IPv4-Adresse in die Gruppe auf. Gibt es schon einen IP-Host mit dieser Adresse, wird er verwendet; sonst legt die Aktion einen an (Name „HA“ plus Adresse, z. B. „HA 192.168.1.50“, oder `host_name`). Die Antwort nennt den verwendeten Host (`host`). Ist `host_name` schon an einen Host mit anderer Adresse vergeben, bricht die Aktion mit einer Meldung ab. `unblock_device` nimmt jeden IP-Host mit dieser Adresse aus der Gruppe (Antwort `hosts`); die IP-Hosts selbst bleiben bestehen.
 
 ```yaml
 # Kinder-Tablet um 21 Uhr sperren

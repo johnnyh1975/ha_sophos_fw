@@ -226,15 +226,19 @@ async def test_invalid_device_input(hass: HomeAssistant, data: dict[str, str]) -
 
 @pytest.mark.usefixtures("writable")
 @pytest.mark.parametrize(
-    "url", ["https://www.example.com/a?b=1", "example.com?x", "example.com#top", "example.com."]
+    ("url", "domain"),
+    [
+        ("https://www.example.com/a?b=1", "www.example.com"),
+        ("example.com?x", "example.com"),
+        ("example.com#top", "example.com"),
+        ("example.com.", "example.com"),
+    ],
 )
 async def test_url_is_reduced_to_the_domain(
-    hass: HomeAssistant, xml_api: FakeSophosApi, url: str
+    hass: HomeAssistant, xml_api: FakeSophosApi, url: str, domain: str
 ) -> None:
     await _call(hass, "block_url", url_group="Empty Group", url=url)
-    assert _group(xml_api, "WebFilterURLGroup", "Empty Group")["URLlist"]["URL"].endswith(
-        "example.com"
-    )
+    assert _group(xml_api, "WebFilterURLGroup", "Empty Group")["URLlist"] == {"URL": domain}
 
 
 # ── Review findings 1.2.0 ─────────────────────────────────────────────────────

@@ -547,7 +547,7 @@
         },
         "host_name": {
           "name": "Host name",
-          "description": "Name for a new IP host (default \"HA <address>\"); max. 50 characters, no comma."
+          "description": "Name for a new IP host (default: \"HA\" and the address, e.g. \"HA 192.168.1.50\"); max. 50 characters, no comma."
         }
       }
     },
