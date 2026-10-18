@@ -1,4 +1,4 @@
-# Home Assistant integration quality scale — self-assessment for v1.1.0.
+# Home Assistant integration quality scale — self-assessment for v1.2.0.
 #
 # All 54 rules of hassfest's rule list (script/hassfest/quality_scale.py).
 # hassfest does not check this file for custom integrations, and no reviewer
@@ -8,8 +8,10 @@
 rules:
   # ── Bronze ────────────────────────────────────────────────────────────────
   action-setup:
-    status: exempt
-    comment: No service actions; control is via switch entities.
+    status: done
+    comment: >
+      block_url/unblock_url/block_device/unblock_device registered in
+      async_setup (services.py); they validate the config entry when called.
   appropriate-polling:
     status: done
     comment: >
@@ -40,8 +42,8 @@ rules:
       Actions job on the v2.0.1 tag (exhuma/puresnmp, pythonpackage.yml).
       The XML API client is part of this repository.
   docs-actions:
-    status: exempt
-    comment: No service actions.
+    status: done
+    comment: README "Aktionen", services.yaml and translated field descriptions.
   docs-conditions:
     status: exempt
     comment: No device conditions.
@@ -78,8 +80,10 @@ rules:
   action-exceptions:
     status: done
     comment: >
-      Switch actions raise a translated HomeAssistantError (write_failed)
-      for API errors, timeouts and unconfirmed writes.
+      Switches and actions raise translated errors: ServiceValidationError
+      for wrong input or a missing precondition (entry not loaded, changes
+      not allowed), HomeAssistantError for API errors, timeouts, unconfirmed
+      writes, built-in or full groups.
   config-entry-unloading:
     status: done
     comment: >
