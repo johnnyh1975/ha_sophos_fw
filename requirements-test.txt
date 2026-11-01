@@ -14,4 +14,4 @@
 pytest-homeassistant-custom-component==0.13.373  # homeassistant==2026.8.3
 
 # The integration's runtime SNMP dependency (mirrors manifest.json).
-puresnmp==2.0.1
+puresnmp==2.0.2
