@@ -52,7 +52,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -294,15 +294,25 @@ class SophosCoordinator[ClientT, DataT](DataUpdateCoordinator[DataT]):
             self._scheduler.invalidate(key)
             self._generation[key] = self._generation.get(key, 0) + 1
 
-    async def async_refresh_endpoints(self, *keys: str) -> None:
-        """Make the given endpoints due and request a refresh.
+    @callback
+    def async_schedule_refresh_endpoints(self, *keys: str) -> None:
+        """Make the given endpoints due and re-read them in the background.
 
         Used after write operations so the written object is re-read no matter
         which tier it belongs to (v1.0.x only reset the operative tier, so the
         web-filter switch — static tier — flipped back for up to 30 minutes).
+
+        Not awaited: a switch reports back as soon as the firewall confirmed the write.
+        Each XML request takes seconds (field logs: 4.6-10.5 s), and the
+        Apple Watch gives an action 15 s (Companion app, MagicItem
+        requestTimeout) — waiting for the re-read as well made toggles from
+        the Watch time out (#40). Bound to the config entry, so an unload
+        cancels it.
         """
         self.invalidate(*keys)
-        await self.async_request_refresh()
+        self.config_entry.async_create_background_task(
+            self.hass, self.async_request_refresh(), f"{self.name} re-read {', '.join(keys)}"
+        )
 
     async def async_first_refresh_of(self, *keys: str) -> None:
         """First refresh limited to these endpoints; the others stay due.

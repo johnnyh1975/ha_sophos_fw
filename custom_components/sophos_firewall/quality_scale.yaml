@@ -1,4 +1,4 @@
-# Home Assistant integration quality scale — self-assessment for v1.2.0.
+# Home Assistant integration quality scale — self-assessment for v1.2.1.
 #
 # All 54 rules of hassfest's rule list (script/hassfest/quality_scale.py).
 # hassfest does not check this file for custom integrations, and no reviewer

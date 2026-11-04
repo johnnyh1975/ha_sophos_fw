@@ -1,7 +1,7 @@
 # Sophos Firewall — Home Assistant Integration
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![Version](https://img.shields.io/badge/Version-1.2.0-green)](https://github.com/johnnyh1975/ha_sophos_fw/releases)
+[![Version](https://img.shields.io/badge/Version-1.2.1-green)](https://github.com/johnnyh1975/ha_sophos_fw/releases)
 [![HA Version](https://img.shields.io/badge/HA-2025.5%2B-blue)](https://www.home-assistant.io)
 [![Quality Scale](https://img.shields.io/badge/Quality_Scale-Platinum_(Selbsteinsch%C3%A4tzung)-blueviolet)](custom_components/sophos_firewall/quality_scale.yaml)
 [![Validate](https://github.com/johnnyh1975/ha_sophos_fw/actions/workflows/validate.yml/badge.svg)](https://github.com/johnnyh1975/ha_sophos_fw/actions/workflows/validate.yml)
@@ -97,9 +97,10 @@ Die Integration spricht SNMP v2c. Der Name der Community muss in Home Assistant 
 
 ### Über HACS (empfohlen)
 
-1. HACS → ⋮ → *Benutzerdefinierte Repositories* → `https://github.com/johnnyh1975/ha_sophos_fw`, Typ *Integration*.
-2. „Sophos Firewall“ suchen und herunterladen.
-3. Home Assistant neu starten.
+1. In HACS nach „Sophos Firewall“ suchen und herunterladen.
+2. Home Assistant neu starten.
+
+Taucht die Integration in deiner HACS-Suche nicht auf, füge das Repository von Hand hinzu: HACS → ⋮ → *Benutzerdefinierte Repositories* → `https://github.com/johnnyh1975/ha_sophos_fw`, Typ *Integration*. Danach wie oben.
 
 ### Manuell
 
@@ -484,6 +485,10 @@ Die beiden Sensoren haben keine Pseudo-Einheit mehr (siehe [Release Notes](relea
 ## Änderungen
 
 Alle Versionen mit Details: [Releases](https://github.com/johnnyh1975/ha_sophos_fw/releases) und [`release-notes/`](release-notes/).
+
+**1.2.1**, Details in den [Release Notes](release-notes/v1.2.1.md):
+- Schalter melden sich zurück, sobald die Firewall das Schreiben bestätigt hat; das Nachlesen folgt im Hintergrund. Schalten von der Apple Watch lief vorher in deren Zeitlimit (#40).
+- Das HACS-Paket enthält keinen Python-Bytecode mehr (`__pycache__`), nur noch die Dateien des Repositorys.
 
 **1.2.0**, die wichtigsten Punkte; Details in den [Release Notes](release-notes/v1.2.0.md):
 - Neu: echter Link-Zustand der Interfaces (SNMP), Aktionen „Seite sperren“ und „Gerät sperren“, ungetestet ⚗️: WLAN-Netze schalten, Access Points, PoE, IPsec-Verbindungen schalten.

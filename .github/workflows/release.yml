@@ -70,7 +70,12 @@ jobs:
           pip install -r requirements-test.txt
 
       - name: Run full test suite (release gate — must pass before packaging)
-        run: python -m pytest tests/ -q
+        # No bytecode: the packaging steps below copy the source folders, and
+        # __pycache__/*.pyc written by this run would otherwise end up in
+        # the HACS zip (HACS default review, v1.2.0).
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m pytest tests/ -q -p no:cacheprovider
 
       - name: Prepare release notes
         id: notes
@@ -109,7 +114,7 @@ jobs:
           mkdir -p /tmp/hacs-package
           cp -r custom_components/sophos_firewall/. /tmp/hacs-package/
           cd /tmp/hacs-package
-          zip -r "${GITHUB_WORKSPACE}/sophos_firewall.zip" .
+          zip -r "${GITHUB_WORKSPACE}/sophos_firewall.zip" . -x '__pycache__/*' '*/__pycache__/*' '*.pyc'
 
       # Makes the two rules above a pipeline gate rather than something a
       # human has to remember at packaging time.
@@ -135,7 +140,14 @@ jobs:
             exit 1
           fi
 
-          echo "sophos_firewall.zip structure OK: manifest.json at root, no custom_components/ wrapper, no hacs.json."
+          # What HACS installs must match the tagged source: no bytecode.
+          if echo "$FILE_LIST" | grep -qE '(^|/)__pycache__/|\.pyc$'; then
+            echo "::error::Bytecode (__pycache__ / .pyc) found in the zip — it must contain the tagged source only."
+            echo "$FILE_LIST" | grep -E '(^|/)__pycache__/|\.pyc$'
+            exit 1
+          fi
+
+          echo "sophos_firewall.zip structure OK: manifest.json at root, no custom_components/ wrapper, no hacs.json, no bytecode."
 
       # Separate, human-facing artefact: the full repo (source + tests + docs
       # + CI) for manual install, review or archiving. HACS never reads this
@@ -154,7 +166,7 @@ jobs:
             cp "${{ steps.notes.outputs.path }}" "/tmp/full-package/RELEASE_NOTES_${{ steps.version.outputs.tag }}.md"
           fi
           cd /tmp/full-package
-          zip -r "${GITHUB_WORKSPACE}/ha_sophos_fw-${{ steps.version.outputs.tag }}-full.zip" .
+          zip -r "${GITHUB_WORKSPACE}/ha_sophos_fw-${{ steps.version.outputs.tag }}-full.zip" . -x '__pycache__/*' '*/__pycache__/*' '*.pyc' '.pytest_cache/*'
 
       - name: Create GitHub Release with assets
         uses: softprops/action-gh-release@v3

@@ -153,7 +153,7 @@ class _SophosWriteSwitch[CoordinatorT: SophosCoordinator[Any, Any]](
         try:
             await self._write(on)
         except SophosError as exc:
-            await self.coordinator.async_refresh_endpoints(self._endpoint or "")
+            self.coordinator.async_schedule_refresh_endpoints(self._endpoint or "")
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="write_failed",
@@ -162,7 +162,8 @@ class _SophosWriteSwitch[CoordinatorT: SophosCoordinator[Any, Any]](
         self._optimistic = on
         self._written_at = time.monotonic()
         self.async_write_ha_state()
-        await self.coordinator.async_refresh_endpoints(self._endpoint or "")
+        # Reported back now; the re-read follows in the background (#40).
+        self.coordinator.async_schedule_refresh_endpoints(self._endpoint or "")
 
     @property
     def _object_name(self) -> str:
