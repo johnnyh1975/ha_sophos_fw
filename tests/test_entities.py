@@ -320,6 +320,27 @@ async def test_firewall_rule_switch(hass: HomeAssistant, xml_api: FakeSophosApi)
     assert _state(hass, entity_id) == STATE_ON
 
 
+async def test_switch_reports_back_before_the_reread(
+    hass: HomeAssistant, xml_api: FakeSophosApi
+) -> None:
+    """#40: the Apple Watch gives an action 15 s, an XML request takes 5-10 s.
+    The action returns once the firewall confirmed the write (read + write);
+    the re-read follows in the background."""
+    await setup_entry(hass, make_entry(snmp_enabled=False, write_access=True))
+    entity_id = f"switch.{P}_switch_fwrule_block_guest"
+    before = xml_api.count("get", "FirewallRule")
+    xml_api.delay = 0.05
+    await hass.services.async_call(
+        SWITCH_DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id}, blocking=True
+    )
+    assert xml_api.count("set", "FirewallRule") == 1
+    assert xml_api.count("get", "FirewallRule") == before + 1  # only the read for the write
+    assert _state(hass, entity_id) == STATE_ON  # optimistic until the re-read
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert xml_api.count("get", "FirewallRule") == before + 2  # the re-read
+    assert _state(hass, entity_id) == STATE_ON
+
+
 async def test_web_filter_switch_is_reread_after_write(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory, xml_api: FakeSophosApi
 ) -> None:
@@ -483,7 +504,8 @@ async def test_web_filter_without_policies_or_default_action(
     assert _state(hass, f"switch.{P}_switch_webfilter_kids") == "unknown"
 
     xml_api.records["WebFilterPolicy"] = []
-    await entry.runtime_data.xml.async_refresh_endpoints("web_filter_policies")
+    entry.runtime_data.xml.invalidate("web_filter_policies")
+    await entry.runtime_data.xml.async_refresh()
     await hass.async_block_till_done()
     assert _state(hass, f"sensor.{P}_sensor_web_filter_default_action") == "unknown"
 
