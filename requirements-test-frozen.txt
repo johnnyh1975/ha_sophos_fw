@@ -17,7 +17,7 @@
 homeassistant==2026.10.2
 
 # Test framework
-pytest==9.1.1
+pytest==9.2.0
 pytest-asyncio==1.4.0
 
 # HTTP mocking for the XML API client tests (aioresponses intercepts the
